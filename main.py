@@ -37,6 +37,9 @@ def main():
     # ------------------------------------------------------------------
     # PHASE 1 -- Data Loading and Exploration
     # ------------------------------------------------------------------
+    print("\n" + "#" * 60)
+    print("# PHASE 1 -- LOADING DATA AND EXPLORATORY DATA ANALYSIS")
+    print("#" * 60)
     print("\nLoading data...")
     X_train, y_train, X_test, train_df, test_df, labels_series = load_data()
 
@@ -47,11 +50,17 @@ def main():
     # ------------------------------------------------------------------
     # PHASE 2 -- Preprocessing Pipeline
     # ------------------------------------------------------------------
+    print("\n" + "#" * 60)
+    print("# PHASE 2 -- PREPROCESSING PIPELINE")
+    print("#" * 60)
     preprocessor = build_preprocessor(eda_summary)
 
     # ------------------------------------------------------------------
     # PHASE 3 -- Baseline Models
     # ------------------------------------------------------------------
+    print("\n" + "#" * 60)
+    print("# PHASE 3 -- BASELINE MODELS")
+    print("#" * 60)
     baseline_results, lr_pipeline, rf_pipeline = run_baseline(
         preprocessor, X_train, y_train, is_imbalanced
     )
@@ -67,7 +76,9 @@ def main():
     # ------------------------------------------------------------------
     # PHASE 4 -- Hyperparameter Tuning
     # ------------------------------------------------------------------
-
+    print("\n" + "#" * 60)
+    print("# PHASE 4 -- HYPERPARAM TUNING")
+    print("#" * 60)
     # Tune XGBoost.
     xgb_search = tune_xgboost(preprocessor, X_train, y_train)
 
@@ -109,6 +120,9 @@ def main():
     # ------------------------------------------------------------------
     # PHASE 5 -- Feature Selection
     # ------------------------------------------------------------------
+    print("\n" + "#" * 60)
+    print("# PHASE 5 -- FEATURE SELECTION")
+    print("#" * 60)
     final_pipeline, selection_description = run_feature_selection(
         preprocessor, best_pipeline, X_train, y_train, baseline_bcr=phase4_bcr
     )
@@ -117,6 +131,9 @@ def main():
     # ------------------------------------------------------------------
     # PHASE 6 -- Final Model Training and BCRhat Estimation
     # ------------------------------------------------------------------
+    print("\n" + "#" * 60)
+    print("# PHASE 6 -- FINAL MODEL TRAINING AND BCRHAT ESTIMATION")
+    print("#" * 60)
     fitted_pipeline, bcr_hat, sigma, fold_bcr_scores = run_evaluation(
         final_pipeline, X_train, y_train
     )
@@ -136,6 +153,9 @@ def main():
     # ------------------------------------------------------------------
     # PHASE 7 -- Generate and Save Predictions
     # ------------------------------------------------------------------
+    print("\n" + "#" * 60)
+    print("# PHASE 7 -- Generating Predictions")
+    print("#" * 60)
     run_predictions(fitted_pipeline, X_test)
 
     print("\nPipeline complete. Submit 'predictions.csv' and BCRhat =", round(bcr_hat, 4))

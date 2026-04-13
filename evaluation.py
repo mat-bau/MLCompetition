@@ -120,9 +120,6 @@ def run_evaluation(pipeline, X_train, y_train):
     sigma           : float, standard error of the mean fold BCR
     fold_bcr_scores : np.ndarray of per-fold BCR scores
     """
-    print("\n" + "#" * 60)
-    print("# PHASE 6 -- BCRhat ESTIMATION AND FINAL TRAINING")
-    print("#" * 60)
 
     print("Computing out-of-fold predictions...")
     bcr_hat, oof_preds = compute_oof_bcr(pipeline, X_train, y_train)

@@ -113,9 +113,7 @@ def run_feature_selection(preprocessor, best_model_pipeline, X_train, y_train,
     best_pipeline         : the pipeline to use going forward (may be unchanged)
     selection_description : string describing the chosen strategy
     """
-    print("\n" + "#" * 60)
-    print("# PHASE 5 -- FEATURE SELECTION")
-    print("#" * 60)
+
     print(f"Baseline BCR (all features): {baseline_bcr:.4f}")
     print("Improvement threshold to adopt selection: 0.002")
 

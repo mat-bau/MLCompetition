@@ -65,9 +65,6 @@ def run_baseline(preprocessor, X_train, y_train, is_imbalanced):
     lr_pipeline : the Logistic Regression pipeline (for reuse)
     rf_pipeline : the Random Forest pipeline (for reuse)
     """
-    print("\n" + "#" * 60)
-    print("# PHASE 3 -- BASELINE MODELS")
-    print("#" * 60)
 
     cv = get_cv()
 

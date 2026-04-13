@@ -201,9 +201,6 @@ def run_eda(train_df, test_df, labels_series):
     -------
     summary : dict with all key findings
     """
-    print("\n" + "#" * 60)
-    print("# PHASE 1 -- EXPLORATORY DATA ANALYSIS")
-    print("#" * 60)
 
     check_shapes(train_df, test_df, labels_series)
     is_imbalanced = check_label_distribution(labels_series)

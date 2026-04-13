@@ -67,9 +67,6 @@ def run_predictions(fitted_pipeline, X_test, output_path=PREDICTIONS_PATH):
     X_test          : np.ndarray of shape (n_test, n_features)
     output_path     : str, path where the CSV will be written
     """
-    print("\n" + "#" * 60)
-    print("# PHASE 7 -- GENERATING PREDICTIONS")
-    print("#" * 60)
 
     test_labels = generate_predictions(fitted_pipeline, X_test)
     output_df   = write_predictions(test_labels, output_path)
