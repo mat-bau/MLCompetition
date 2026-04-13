@@ -48,6 +48,7 @@ from config import (
     SVM_N_ITER,
     MLP_N_ITER,
     N_JOBS,
+    ROBUSTNESS_SEEDS,
 )
 
 
@@ -60,11 +61,13 @@ def _make_pipeline(preprocessor, model):
     if IMBLEARN_AVAILABLE:
         from imblearn.pipeline import Pipeline as ImbPipeline
         from imblearn.over_sampling import SMOTE
-        return ImbPipeline([
-            ("preprocessor", deepcopy(preprocessor)),
-            ("smote",        SMOTE(random_state=RANDOM_STATE)),
-            ("model",        model),
-        ])
+        # imblearn does not allow a Pipeline as an intermediate step, so we
+        # flatten the preprocessor's steps directly into the ImbPipeline.
+        return ImbPipeline(
+            [(name, deepcopy(step)) for name, step in preprocessor.steps]
+            + [("smote", SMOTE(random_state=RANDOM_STATE)),
+               ("model", model)]
+        )
     return Pipeline([
         ("preprocessor", deepcopy(preprocessor)),
         ("model",        model),
@@ -518,3 +521,52 @@ def select_best_model(baseline_results, xgb_search, svm_search,
           f"(BCR={chosen['mean']:.4f}, std={chosen['std']:.4f})")
 
     return chosen["pipeline"], chosen["name"], candidates
+
+
+def evaluate_robustness(pipeline, X_train, y_train):
+    """Estimate model stability by running CV with multiple random seeds.
+
+    Each seed produces a different StratifiedKFold split; the spread of
+    mean BCR across seeds reflects how sensitive the model is to data
+    partitioning (i.e. luck in the CV draw).
+
+    A small robustness_score (std across seeds) means the estimate is
+    stable and trustworthy; a large value signals high sensitivity to
+    the choice of folds.
+
+    Parameters
+    ----------
+    pipeline  : sklearn-compatible Pipeline (not yet fitted)
+    X_train   : np.ndarray
+    y_train   : np.ndarray of int
+
+    Returns
+    -------
+    mean_across_seeds  : float
+    robustness_score   : float, std of mean BCR across seeds
+    seed_results       : list of dicts {"seed", "mean", "std"}
+    """
+    print(f"\n  Multi-seed robustness evaluation ({len(ROBUSTNESS_SEEDS)} seeds):")
+    t0 = time.time()
+
+    seed_results = []
+    for seed in ROBUSTNESS_SEEDS:
+        cv = StratifiedKFold(n_splits=CV_N_SPLITS, shuffle=True, random_state=seed)
+        scores = cross_val_score(
+            pipeline, X_train, y_train,
+            cv=cv, scoring="balanced_accuracy", n_jobs=1,
+        )
+        seed_results.append({"seed": seed, "mean": float(scores.mean()),
+                              "std": float(scores.std())})
+        print(f"    seed={seed:<6}  BCR={scores.mean():.4f} ± {scores.std():.4f}")
+
+    means             = np.array([r["mean"] for r in seed_results])
+    mean_across_seeds = float(means.mean())
+    robustness_score  = float(means.std())   # low = stable, high = sensitive
+
+    print(f"\n  Mean BCR across seeds   : {mean_across_seeds:.4f}")
+    print(f"  Robustness score (std)  : {robustness_score:.4f}  "
+          f"({'stable' if robustness_score < 0.01 else 'moderate' if robustness_score < 0.02 else 'unstable'})")
+    print(f"  Multi-seed evaluation done in {time.time() - t0:.1f}s")
+
+    return mean_across_seeds, robustness_score, seed_results
