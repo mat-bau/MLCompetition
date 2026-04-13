@@ -17,6 +17,29 @@ from models import get_cv
 from config import SELECT_K_VALUES, PCA_N_VALUES, RANDOM_STATE, N_JOBS
 
 
+def _build_selection_pipeline(preprocessor, selector, selector_name, model_step,
+                               smote_steps):
+    """Build a cross-validation pipeline that includes a feature selector.
+
+    If the best model pipeline contained a SMOTE step, it is re-inserted
+    between the selector and the model so that oversampling only affects
+    the training fold (imblearn Pipeline guarantees this).
+    """
+    if smote_steps:
+        from imblearn.pipeline import Pipeline as ImbPipeline
+        return ImbPipeline([
+            ("preprocessor", deepcopy(preprocessor)),
+            (selector_name,  selector),
+            *[(n, deepcopy(s)) for n, s in smote_steps],
+            (model_step[0],  deepcopy(model_step[1])),
+        ])
+    return Pipeline([
+        ("preprocessor", deepcopy(preprocessor)),
+        (selector_name,  selector),
+        (model_step[0],  deepcopy(model_step[1])),
+    ])
+
+
 def evaluate_select_k_best(preprocessor, best_model_pipeline,
                             X_train, y_train,
                             score_func=f_classif):
@@ -29,18 +52,17 @@ def evaluate_select_k_best(preprocessor, best_model_pipeline,
     func_name = score_func.__name__
     print(f"\n  SelectKBest ({func_name})  [{len(SELECT_K_VALUES)} configs × {5} folds]:")
 
-    model_step = best_model_pipeline.steps[-1]
+    model_step  = best_model_pipeline.steps[-1]
+    smote_steps = [(n, s) for n, s in best_model_pipeline.steps
+                   if hasattr(s, "fit_resample")]
 
     results = []
     for k in SELECT_K_VALUES:
-        t0 = time.time()
+        t0       = time.time()
         selector = SelectKBest(score_func=score_func, k=k)
-        pipeline = Pipeline([
-            ("preprocessor", deepcopy(preprocessor)),
-            ("selector",     selector),
-            (model_step[0],  deepcopy(model_step[1])),
-        ])
-
+        pipeline = _build_selection_pipeline(
+            preprocessor, selector, "selector", model_step, smote_steps
+        )
         scores = cross_val_score(
             pipeline, X_train, y_train,
             cv=get_cv(), scoring="balanced_accuracy",
@@ -62,18 +84,17 @@ def evaluate_pca(preprocessor, best_model_pipeline, X_train, y_train):
     """
     print(f"\n  PCA dimensionality reduction  [{len(PCA_N_VALUES)} configs × {5} folds]:")
 
-    model_step = best_model_pipeline.steps[-1]
+    model_step  = best_model_pipeline.steps[-1]
+    smote_steps = [(n, s) for n, s in best_model_pipeline.steps
+                   if hasattr(s, "fit_resample")]
 
     results = []
     for n in PCA_N_VALUES:
         t0  = time.time()
         pca = PCA(n_components=n, random_state=RANDOM_STATE)
-        pipeline = Pipeline([
-            ("preprocessor", deepcopy(preprocessor)),
-            ("pca",          pca),
-            (model_step[0],  deepcopy(model_step[1])),
-        ])
-
+        pipeline = _build_selection_pipeline(
+            preprocessor, pca, "pca", model_step, smote_steps
+        )
         scores = cross_val_score(
             pipeline, X_train, y_train,
             cv=get_cv(), scoring="balanced_accuracy",
@@ -105,6 +126,13 @@ def run_feature_selection(preprocessor, best_model_pipeline, X_train, y_train,
     best_pipeline         : the pipeline to use going forward (may be unchanged)
     selection_description : string describing the chosen strategy
     """
+    # StackingClassifier (or any model without .steps) cannot be decomposed
+    # into preprocessor + model.  Skip feature selection in that case.
+    if not hasattr(best_model_pipeline, "steps"):
+        print("  Best model is an ensemble without a pipeline structure. "
+              "Skipping feature selection.")
+        return best_model_pipeline, "No feature selection (ensemble model)"
+
     t0 = time.time()
 
     print(f"  Baseline BCR (all features): {baseline_bcr:.4f}")
@@ -155,7 +183,9 @@ def run_feature_selection(preprocessor, best_model_pipeline, X_train, y_train,
         print(f"\n  Adopting: {strategy_name} with param={best_param} "
               f"(improvement={best_improvement:+.4f})")
 
-        model_step = best_model_pipeline.steps[-1]
+        model_step  = best_model_pipeline.steps[-1]
+        smote_steps = [(n, s) for n, s in best_model_pipeline.steps
+                       if hasattr(s, "fit_resample")]
 
         if strategy_key == "pca":
             selector      = PCA(n_components=best_param, random_state=RANDOM_STATE)
@@ -167,11 +197,9 @@ def run_feature_selection(preprocessor, best_model_pipeline, X_train, y_train,
             selector      = SelectKBest(score_func=f_classif, k=best_param)
             selector_name = "selector"
 
-        final_pipeline = Pipeline([
-            ("preprocessor", deepcopy(preprocessor)),
-            (selector_name,  selector),
-            (model_step[0],  deepcopy(model_step[1])),
-        ])
+        final_pipeline = _build_selection_pipeline(
+            preprocessor, selector, selector_name, model_step, smote_steps
+        )
         selection_description = f"{strategy_name} k/n={best_param}"
 
     else:
