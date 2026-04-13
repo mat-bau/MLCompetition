@@ -8,19 +8,26 @@ import pandas as pd
 from config import PREDICTIONS_PATH, REVERSE_LABEL_MAP
 
 
-def generate_predictions(fitted_pipeline, X_test):
+def generate_predictions(fitted_pipeline, X_test, threshold=0.5):
     """Predict labels for the test set.
 
     Parameters
     ----------
     fitted_pipeline : sklearn Pipeline fitted on all training data
     X_test          : np.ndarray of shape (n_test, n_features)
+    threshold       : float, decision threshold for class 1 (default 0.5).
+                      Pass the value returned by run_evaluation to use the
+                      BCR-optimal threshold found during OOF scanning.
 
     Returns
     -------
     test_labels : list of string labels ('positive' or 'negative')
     """
-    test_predictions_int = fitted_pipeline.predict(X_test)
+    if threshold != 0.5:
+        probas = fitted_pipeline.predict_proba(X_test)[:, 1]
+        test_predictions_int = (probas >= threshold).astype(int)
+    else:
+        test_predictions_int = fitted_pipeline.predict(X_test)
     test_labels = [REVERSE_LABEL_MAP[p] for p in test_predictions_int]
     return test_labels
 
@@ -58,17 +65,20 @@ def write_predictions(test_labels, output_path=PREDICTIONS_PATH):
     return output_df
 
 
-def run_predictions(fitted_pipeline, X_test, output_path=PREDICTIONS_PATH):
+def run_predictions(fitted_pipeline, X_test, threshold=0.5,
+                    output_path=PREDICTIONS_PATH):
     """Generate predictions, write the file, and run sanity checks.
 
     Parameters
     ----------
     fitted_pipeline : sklearn Pipeline fitted on all training data
     X_test          : np.ndarray of shape (n_test, n_features)
+    threshold       : float, BCR-optimal threshold from run_evaluation
     output_path     : str, path where the CSV will be written
     """
 
-    test_labels = generate_predictions(fitted_pipeline, X_test)
+    print(f"  Applying decision threshold : {threshold:.2f}")
+    test_labels = generate_predictions(fitted_pipeline, X_test, threshold=threshold)
     output_df   = write_predictions(test_labels, output_path)
 
     # Sanity checks before submission.
