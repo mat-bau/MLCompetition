@@ -27,12 +27,14 @@ def _build_selection_pipeline(preprocessor, selector, selector_name, model_step,
     """
     if smote_steps:
         from imblearn.pipeline import Pipeline as ImbPipeline
-        return ImbPipeline([
-            ("preprocessor", deepcopy(preprocessor)),
-            (selector_name,  selector),
-            *[(n, deepcopy(s)) for n, s in smote_steps],
-            (model_step[0],  deepcopy(model_step[1])),
-        ])
+        # Flatten preprocessor steps — imblearn forbids a Pipeline as an
+        # intermediate step.
+        return ImbPipeline(
+            [(name, deepcopy(step)) for name, step in preprocessor.steps]
+            + [(selector_name, selector)]
+            + [(n, deepcopy(s)) for n, s in smote_steps]
+            + [(model_step[0], deepcopy(model_step[1]))]
+        )
     return Pipeline([
         ("preprocessor", deepcopy(preprocessor)),
         (selector_name,  selector),

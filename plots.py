@@ -436,3 +436,116 @@ def plot_hyperparameter_search_results(search, model_name, param_name, filename)
     ax.legend(fontsize=9)
     plt.tight_layout()
     _savefig(fig, filename)
+
+
+def plot_learning_curve(pipeline, X_train, y_train, filename="eval_03_learning_curve.png"):
+    """Learning curve: training size vs train/CV BCR.
+
+    Useful for diagnosing overfitting (large gap between train and CV) or
+    underfitting (both scores plateau at a low value).
+
+    Parameters
+    ----------
+    pipeline : sklearn-compatible Pipeline (unfitted)
+    X_train  : np.ndarray
+    y_train  : np.ndarray of int
+    filename : output filename
+    """
+    from sklearn.model_selection import learning_curve
+
+    train_sizes = np.linspace(0.10, 1.0, 8)
+
+    train_sz, train_scores, cv_scores = learning_curve(
+        pipeline, X_train, y_train,
+        train_sizes=train_sizes,
+        cv=5,
+        scoring="balanced_accuracy",
+        n_jobs=1,
+        shuffle=True,
+        random_state=RANDOM_STATE,
+    )
+
+    train_mean = train_scores.mean(axis=1)
+    train_std  = train_scores.std(axis=1)
+    cv_mean    = cv_scores.mean(axis=1)
+    cv_std     = cv_scores.std(axis=1)
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.plot(train_sz, train_mean, "o-", color="#2ecc71", label="Train BCR")
+    ax.fill_between(train_sz, train_mean - train_std, train_mean + train_std,
+                    alpha=0.15, color="#2ecc71")
+    ax.plot(train_sz, cv_mean, "s-", color="#e74c3c", label="CV BCR (5-fold)")
+    ax.fill_between(train_sz, cv_mean - cv_std, cv_mean + cv_std,
+                    alpha=0.15, color="#e74c3c")
+
+    ax.set_title("Learning Curve — BCR vs Training Set Size")
+    ax.set_xlabel("Training samples")
+    ax.set_ylabel("Balanced Accuracy")
+    ax.legend(fontsize=9)
+    ax.set_ylim(max(0, min(cv_mean.min(), train_mean.min()) - 0.05),
+                min(1.0, max(cv_mean.max(), train_mean.max()) + 0.04))
+    plt.tight_layout()
+    _savefig(fig, filename)
+
+
+def plot_cv_scatter(search, model_name, param_x, param_y, filename):
+    """2-D scatter of RandomizedSearch trials: param_x vs param_y, colour = BCR.
+
+    Unlike a heatmap (which requires a uniform grid), this works correctly
+    with the non-uniform sampling of RandomizedSearchCV.
+
+    Parameters
+    ----------
+    search    : fitted RandomizedSearchCV
+    model_name: display name for title
+    param_x   : key in search.cv_results_["params"], e.g. "model__C"
+    param_y   : key in search.cv_results_["params"], e.g. "model__gamma"
+    filename  : output filename
+    """
+    params = search.cv_results_["params"]
+    means  = search.cv_results_["mean_test_score"]
+    stds   = search.cv_results_["std_test_score"]
+
+    x_vals = []
+    y_vals = []
+    for p in params:
+        xv = p.get(param_x)
+        yv = p.get(param_y)
+        x_vals.append(float(xv) if xv is not None else np.nan)
+        y_vals.append(float(yv) if yv is not None else np.nan)
+
+    x_arr = np.array(x_vals)
+    y_arr = np.array(y_vals)
+
+    # Mask trials where both params exist.
+    mask = ~(np.isnan(x_arr) | np.isnan(y_arr))
+    if mask.sum() < 3:
+        print(f"  [plot] {filename}: fewer than 3 trials with both {param_x} "
+              f"and {param_y} — skipping scatter.")
+        return
+
+    fig, ax = plt.subplots(figsize=(7, 5))
+    sc = ax.scatter(
+        x_arr[mask], y_arr[mask],
+        c=means[mask], cmap="RdYlGn",
+        s=60 / (stds[mask] + 0.01),   # larger = more stable
+        alpha=0.75, edgecolors="white", linewidths=0.4,
+    )
+    plt.colorbar(sc, ax=ax, label="Mean CV BCR")
+
+    best_idx = search.best_index_
+    if mask[best_idx]:
+        ax.scatter(x_arr[best_idx], y_arr[best_idx],
+                   marker="*", s=250, color="red", zorder=5,
+                   label=f"Best = {means[best_idx]:.4f}")
+        ax.legend(fontsize=9)
+
+    x_label = param_x.replace("model__", "")
+    y_label = param_y.replace("model__", "")
+    ax.set_xscale("log") if x_arr[mask].min() > 0 and (x_arr[mask].max() / x_arr[mask].min() > 100) else None
+    ax.set_yscale("log") if y_arr[mask].min() > 0 and (y_arr[mask].max() / y_arr[mask].min() > 100) else None
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(y_label)
+    ax.set_title(f"{model_name} — RandomizedSearch: {x_label} vs {y_label}")
+    plt.tight_layout()
+    _savefig(fig, filename)
