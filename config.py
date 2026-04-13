@@ -7,10 +7,10 @@ import os
 # -------------------------------------------------------------------
 # File paths (relative to the working directory where main.py is run)
 # -------------------------------------------------------------------
-TRAIN_FEATURES_PATH = "A5_2026_train.csv"
-TRAIN_LABELS_PATH   = "A5_2026_train_labels.csv"
-TEST_FEATURES_PATH  = "A5_2026_test.csv"
-PREDICTIONS_PATH    = "predictions.csv"
+TRAIN_FEATURES_PATH = "./A5_2026_train.csv"
+TRAIN_LABELS_PATH   = "./A5_2026_train_labels.csv"
+TEST_FEATURES_PATH  = "./A5_2026_test.csv"
+PREDICTIONS_PATH    = "./predictions.csv"
 
 # -------------------------------------------------------------------
 # Label encoding convention
