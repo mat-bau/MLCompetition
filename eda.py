@@ -1,8 +1,9 @@
 # eda.py
 # Phase 1 -- Exploratory Data Analysis.
 # All checks are run here and a summary dict is returned.
-# No modeling code lives in this file.
+# Saves plots to PLOTS_DIR.
 
+import time
 import numpy as np
 import pandas as pd
 from sklearn.feature_selection import VarianceThreshold
@@ -16,10 +17,16 @@ from config import (
 )
 
 
+def _hdr(title):
+    """Print a consistent section header."""
+    print(f"\n{'=' * 60}")
+    print(f"  {title}")
+    print("=" * 60)
+
+
 def check_shapes(train_df, test_df, labels_series):
     """Verify expected shapes and print a summary."""
-    print("=" * 60)
-    print("SHAPE VERIFICATION")
+    _hdr("SHAPE VERIFICATION")
     print(f"  Train features : {train_df.shape}  (expected 3000 x 1024)")
     print(f"  Test  features : {test_df.shape}   (expected 1000 x 1024)")
     print(f"  Labels         : {labels_series.shape}  (expected 3000 x 1)")
@@ -29,10 +36,9 @@ def check_shapes(train_df, test_df, labels_series):
 
 def check_label_distribution(labels_series):
     """Count classes and flag imbalance if one class is below threshold."""
+    _hdr("LABEL DISTRIBUTION")
     counts = labels_series.value_counts()
     total  = len(labels_series)
-    print("=" * 60)
-    print("LABEL DISTRIBUTION")
     for label, count in counts.items():
         pct = 100.0 * count / total
         print(f"  {label:10s} : {count:5d}  ({pct:.1f}%)")
@@ -49,8 +55,7 @@ def check_label_distribution(labels_series):
 
 def check_missing_values(train_df, test_df, labels_series):
     """Report total NaN counts per file."""
-    print("=" * 60)
-    print("MISSING VALUES")
+    _hdr("MISSING VALUES")
     nan_train  = train_df.isnull().sum().sum()
     nan_test   = test_df.isnull().sum().sum()
     nan_labels = labels_series.isnull().sum()
@@ -62,8 +67,7 @@ def check_missing_values(train_df, test_df, labels_series):
 
 def check_dtypes(train_df):
     """Verify all feature columns are numeric."""
-    print("=" * 60)
-    print("DATA TYPES")
+    _hdr("DATA TYPES")
     non_float = train_df.dtypes[train_df.dtypes == object]
     if len(non_float) > 0:
         print(f"  WARNING: {len(non_float)} columns are object type: {list(non_float.index)}")
@@ -73,8 +77,7 @@ def check_dtypes(train_df):
 
 def check_value_ranges(train_df):
     """Report global min, max, mean, std across all features."""
-    print("=" * 60)
-    print("FEATURE VALUE RANGES")
+    _hdr("FEATURE VALUE RANGES")
     global_min  = train_df.values.min()
     global_max  = train_df.values.max()
     global_mean = train_df.values.mean()
@@ -88,8 +91,7 @@ def check_value_ranges(train_df):
 
 def check_constant_features(train_df):
     """Find zero-variance and near-constant features."""
-    print("=" * 60)
-    print("CONSTANT / NEAR-CONSTANT FEATURES")
+    _hdr("CONSTANT / NEAR-CONSTANT FEATURES")
 
     variances = train_df.var(axis=0)
 
@@ -108,19 +110,12 @@ def check_constant_features(train_df):
 
 
 def check_high_correlation(train_df, zero_var_cols):
-    """Flag feature pairs with absolute Pearson correlation above threshold.
+    """Flag feature pairs with absolute Pearson correlation above threshold."""
+    _hdr(f"HIGH CORRELATION PAIRS (threshold = {HIGH_CORR_THRESHOLD})")
 
-    Computation is O(n_features^2). Skips zero-variance columns to avoid
-    division-by-zero in the correlation calculation.
-    """
-    print("=" * 60)
-    print(f"HIGH CORRELATION PAIRS (threshold = {HIGH_CORR_THRESHOLD})")
-
-    # Drop zero-variance columns before computing correlations.
     cols_to_use = [c for c in train_df.columns if c not in zero_var_cols]
     corr_matrix = train_df[cols_to_use].corr().abs()
 
-    # Extract upper triangle only to avoid counting each pair twice.
     upper = corr_matrix.where(
         np.triu(np.ones(corr_matrix.shape), k=1).astype(bool)
     )
@@ -140,16 +135,12 @@ def check_high_correlation(train_df, zero_var_cols):
 
 def check_outliers(train_df):
     """Count features and values with outliers beyond OUTLIER_STD_THRESHOLD std."""
-    print("=" * 60)
-    print(f"OUTLIER CHECK (threshold = {OUTLIER_STD_THRESHOLD} std deviations)")
+    _hdr(f"OUTLIER CHECK (threshold = {OUTLIER_STD_THRESHOLD} std deviations)")
 
     col_means = train_df.mean(axis=0)
-    col_stds  = train_df.std(axis=0)
+    col_stds  = train_df.std(axis=0).replace(0, np.nan)
 
-    # Avoid division by zero for constant columns.
-    col_stds_safe = col_stds.replace(0, np.nan)
-
-    z_scores = (train_df - col_means) / col_stds_safe
+    z_scores = (train_df - col_means) / col_stds
     outlier_mask = z_scores.abs() > OUTLIER_STD_THRESHOLD
 
     n_outlier_features = outlier_mask.any(axis=0).sum()
@@ -170,8 +161,7 @@ def check_outliers(train_df):
 
 def check_distribution_shift(train_df, test_df):
     """Flag features where train and test mean differ by more than DIST_SHIFT_THRESHOLD stds."""
-    print("=" * 60)
-    print(f"TRAIN/TEST DISTRIBUTION SHIFT (threshold = {DIST_SHIFT_THRESHOLD} train std)")
+    _hdr(f"TRAIN/TEST DISTRIBUTION SHIFT (threshold = {DIST_SHIFT_THRESHOLD} train std)")
 
     train_means = train_df.mean(axis=0)
     train_stds  = train_df.std(axis=0).replace(0, np.nan)
@@ -188,19 +178,21 @@ def check_distribution_shift(train_df, test_df):
     return len(shifted_features)
 
 
-def run_eda(train_df, test_df, labels_series):
-    """Run all Phase 1 checks and return a summary dictionary.
+def run_eda(train_df, test_df, labels_series, y_train=None):
+    """Run all Phase 1 checks, generate plots, and return a summary dictionary.
 
     Parameters
     ----------
     train_df       : pd.DataFrame of train features
     test_df        : pd.DataFrame of test features
     labels_series  : pd.Series of string labels
+    y_train        : optional np.ndarray of int labels (for class-mean plot)
 
     Returns
     -------
     summary : dict with all key findings
     """
+    t0 = time.time()
 
     check_shapes(train_df, test_df, labels_series)
     is_imbalanced = check_label_distribution(labels_series)
@@ -208,9 +200,47 @@ def run_eda(train_df, test_df, labels_series):
     check_dtypes(train_df)
     value_ranges  = check_value_ranges(train_df)
     zero_var_cols, near_const_cols = check_constant_features(train_df)
+
+    print("\n  [EDA] Computing high-correlation pairs (may take a moment)...")
+    t_corr = time.time()
     high_corr_pairs = check_high_correlation(train_df, zero_var_cols)
+    print(f"  [EDA] Correlation check done in {time.time() - t_corr:.1f}s")
+
     n_outlier_features, n_outlier_values, outlier_frac = check_outliers(train_df)
     n_shifted = check_distribution_shift(train_df, test_df)
+
+    _hdr("EDA SUMMARY")
+    print(f"  Imbalanced dataset         : {is_imbalanced}")
+    print(f"  Zero-variance features     : {len(zero_var_cols)}")
+    print(f"  Near-constant features     : {len(near_const_cols)}")
+    print(f"  High-corr pairs (>{HIGH_CORR_THRESHOLD}) : {len(high_corr_pairs)}")
+    print(f"  Features with outliers     : {n_outlier_features}")
+    print(f"  Shifted features (train/test): {n_shifted}")
+
+    # ------------------------------------------------------------------
+    # Generate EDA plots
+    # ------------------------------------------------------------------
+    print("\n  [EDA] Generating plots...")
+    try:
+        from plots import (
+            plot_class_distribution,
+            plot_feature_variance_histogram,
+            plot_correlation_heatmap,
+            plot_train_test_distribution_shift,
+            plot_outlier_heatmap,
+            plot_feature_means_by_class,
+        )
+        plot_class_distribution(labels_series)
+        plot_feature_variance_histogram(train_df, zero_var_cols)
+        plot_correlation_heatmap(train_df, zero_var_cols, n_top=40)
+        plot_train_test_distribution_shift(train_df, test_df)
+        plot_outlier_heatmap(train_df, zero_var_cols)
+        if y_train is not None:
+            plot_feature_means_by_class(train_df, y_train)
+    except Exception as exc:
+        print(f"  [plot] WARNING: Could not generate some EDA plots: {exc}")
+
+    print(f"\n  EDA completed in {time.time() - t0:.1f}s")
 
     summary = {
         "is_imbalanced"      : is_imbalanced,
@@ -226,20 +256,10 @@ def run_eda(train_df, test_df, labels_series):
         "n_shifted_features" : n_shifted,
     }
 
-    print("\n" + "=" * 60)
-    print("EDA SUMMARY")
-    print(f"  Imbalanced dataset         : {is_imbalanced}")
-    print(f"  Zero-variance features     : {len(zero_var_cols)}")
-    print(f"  Near-constant features     : {len(near_const_cols)}")
-    print(f"  High-corr pairs (>{HIGH_CORR_THRESHOLD}) : {len(high_corr_pairs)}")
-    print(f"  Features with outliers     : {n_outlier_features}")
-    print(f"  Shifted features (train/test): {n_shifted}")
-    print("=" * 60 + "\n")
-
     return summary
 
 
 if __name__ == "__main__":
     from data_loader import load_data
-    _, _, _, train_df, test_df, labels_series = load_data()
-    summary = run_eda(train_df, test_df, labels_series)
+    X_train, y_train, _, train_df, test_df, labels_series = load_data()
+    summary = run_eda(train_df, test_df, labels_series, y_train=y_train)

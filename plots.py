@@ -1,0 +1,438 @@
+# plots.py
+# Centralized plotting utilities for the A5 Toxicity Classification pipeline.
+# All plots are saved to PLOTS_DIR and displayed if a display is available.
+# Uses matplotlib + seaborn.
+
+import os
+import numpy as np
+import pandas as pd
+import matplotlib
+matplotlib.use("Agg")          # non-interactive backend (safe on all machines)
+import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
+import seaborn as sns
+
+from config import PLOTS_DIR, RANDOM_STATE
+
+# Apply a clean, consistent style across all plots.
+sns.set_theme(style="whitegrid", palette="muted", font_scale=1.05)
+plt.rcParams.update({
+    "figure.dpi": 120,
+    "savefig.dpi": 150,
+    "savefig.bbox": "tight",
+    "axes.titleweight": "bold",
+})
+
+
+def _ensure_plots_dir():
+    """Create the plots directory if it does not exist."""
+    os.makedirs(PLOTS_DIR, exist_ok=True)
+
+
+def _savefig(fig, filename):
+    """Save a figure to PLOTS_DIR and close it."""
+    _ensure_plots_dir()
+    path = os.path.join(PLOTS_DIR, filename)
+    fig.savefig(path)
+    plt.close(fig)
+    print(f"  [plot] saved → {path}")
+
+
+# ====================================================================
+# EDA PLOTS
+# ====================================================================
+
+def plot_class_distribution(labels_series):
+    """Bar chart of class counts and percentages.
+
+    Parameters
+    ----------
+    labels_series : pd.Series of string labels ('positive' / 'negative')
+    """
+    counts = labels_series.value_counts().sort_index()
+    total  = len(labels_series)
+    pcts   = 100 * counts / total
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+    bars = ax.bar(counts.index, counts.values,
+                  color=["#e74c3c", "#3498db"], edgecolor="white", linewidth=0.8)
+    for bar, pct in zip(bars, pcts):
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 15,
+                f"{pct:.1f}%", ha="center", va="bottom", fontsize=11)
+
+    ax.set_title("Class Distribution (Train Labels)")
+    ax.set_xlabel("Class")
+    ax.set_ylabel("Count")
+    ax.set_ylim(0, counts.max() * 1.15)
+    _savefig(fig, "eda_01_class_distribution.png")
+
+
+def plot_feature_variance_histogram(train_df, zero_var_cols):
+    """Histogram of per-feature variances (excluding zero-variance features).
+
+    Parameters
+    ----------
+    train_df      : pd.DataFrame of train features
+    zero_var_cols : list of column names with zero variance
+    """
+    cols_to_use = [c for c in train_df.columns if c not in zero_var_cols]
+    variances   = train_df[cols_to_use].var(axis=0)
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+
+    # Full distribution
+    axes[0].hist(variances, bins=60, color="#2ecc71", edgecolor="white", linewidth=0.5)
+    axes[0].set_title("Feature Variance Distribution (all)")
+    axes[0].set_xlabel("Variance")
+    axes[0].set_ylabel("Number of Features")
+
+    # Zoomed in: bottom 95th percentile
+    cutoff = np.percentile(variances, 95)
+    axes[1].hist(variances[variances <= cutoff], bins=60,
+                 color="#3498db", edgecolor="white", linewidth=0.5)
+    axes[1].set_title("Feature Variance Distribution (≤ 95th pct)")
+    axes[1].set_xlabel("Variance")
+    axes[1].set_ylabel("Number of Features")
+
+    fig.suptitle(f"Feature Variances  |  {len(zero_var_cols)} zero-variance features excluded",
+                 fontweight="bold")
+    plt.tight_layout()
+    _savefig(fig, "eda_02_feature_variances.png")
+
+
+def plot_correlation_heatmap(train_df, zero_var_cols, n_top=40):
+    """Heatmap of correlations among the n_top highest-variance features.
+
+    Parameters
+    ----------
+    train_df      : pd.DataFrame of train features
+    zero_var_cols : list of zero-variance column names to exclude
+    n_top         : number of top-variance features to include in the heatmap
+    """
+    cols_to_use = [c for c in train_df.columns if c not in zero_var_cols]
+    variances   = train_df[cols_to_use].var(axis=0).sort_values(ascending=False)
+    top_cols    = variances.head(n_top).index.tolist()
+
+    corr = train_df[top_cols].corr()
+
+    fig, ax = plt.subplots(figsize=(14, 12))
+    mask = np.triu(np.ones_like(corr, dtype=bool))   # upper triangle mask
+    sns.heatmap(
+        corr, mask=mask, ax=ax,
+        cmap="RdBu_r", center=0, vmin=-1, vmax=1,
+        linewidths=0.3, linecolor="white",
+        annot=False, square=True,
+        cbar_kws={"shrink": 0.7, "label": "Pearson r"},
+    )
+    ax.set_title(f"Correlation Heatmap — Top {n_top} Highest-Variance Features",
+                 pad=12)
+    ax.set_xticklabels(ax.get_xticklabels(), rotation=90, fontsize=7)
+    ax.set_yticklabels(ax.get_yticklabels(), rotation=0,  fontsize=7)
+    plt.tight_layout()
+    _savefig(fig, "eda_03_correlation_heatmap.png")
+
+
+def plot_train_test_distribution_shift(train_df, test_df, n_top=30):
+    """Scatter of train mean vs test mean for the top shifted features.
+
+    A perfect train=test line is drawn for reference.
+
+    Parameters
+    ----------
+    train_df : pd.DataFrame of train features
+    test_df  : pd.DataFrame of test features
+    n_top    : number of features to label (most shifted ones)
+    """
+    train_means = train_df.mean(axis=0)
+    test_means  = test_df.mean(axis=0)
+    train_stds  = train_df.std(axis=0).replace(0, np.nan)
+    shift       = ((test_means - train_means).abs() / train_stds).fillna(0)
+
+    fig, ax = plt.subplots(figsize=(7, 7))
+    sc = ax.scatter(train_means, test_means, c=shift, cmap="YlOrRd",
+                    s=8, alpha=0.6, rasterized=True)
+    plt.colorbar(sc, ax=ax, label="Shift (|Δmean| / train std)")
+
+    # Identity line
+    lo = min(train_means.min(), test_means.min())
+    hi = max(train_means.max(), test_means.max())
+    ax.plot([lo, hi], [lo, hi], "k--", linewidth=0.8, label="train = test")
+    ax.legend(fontsize=9)
+
+    ax.set_title("Train vs Test Feature Means (Distribution Shift)")
+    ax.set_xlabel("Train Mean")
+    ax.set_ylabel("Test Mean")
+    plt.tight_layout()
+    _savefig(fig, "eda_04_distribution_shift.png")
+
+
+def plot_outlier_heatmap(train_df, zero_var_cols, n_top=50):
+    """Bar chart of the top features by outlier count.
+
+    Parameters
+    ----------
+    train_df      : pd.DataFrame of train features
+    zero_var_cols : list of zero-variance column names to exclude
+    n_top         : number of top features to show
+    """
+    from config import OUTLIER_STD_THRESHOLD
+
+    cols_to_use  = [c for c in train_df.columns if c not in zero_var_cols]
+    sub          = train_df[cols_to_use]
+    col_means    = sub.mean(axis=0)
+    col_stds     = sub.std(axis=0).replace(0, np.nan)
+    z_scores     = (sub - col_means) / col_stds
+    outlier_cnts = (z_scores.abs() > OUTLIER_STD_THRESHOLD).sum(axis=0)
+    top_outliers = outlier_cnts.sort_values(ascending=False).head(n_top)
+
+    if top_outliers.sum() == 0:
+        print("  [plot] No outliers found — skipping outlier bar chart.")
+        return
+
+    fig, ax = plt.subplots(figsize=(12, 4))
+    ax.bar(range(len(top_outliers)), top_outliers.values,
+           color="#e67e22", edgecolor="white", linewidth=0.5)
+    ax.set_title(f"Top {n_top} Features by Outlier Count  (|z| > {OUTLIER_STD_THRESHOLD})")
+    ax.set_xlabel("Feature rank (most outliers → left)")
+    ax.set_ylabel("Number of outlier samples")
+    ax.xaxis.set_major_formatter(mticker.NullFormatter())
+    plt.tight_layout()
+    _savefig(fig, "eda_05_outlier_features.png")
+
+
+def plot_feature_means_by_class(train_df, y_train, n_top=30):
+    """Horizontal bar chart: features where class means differ the most.
+
+    Parameters
+    ----------
+    train_df : pd.DataFrame of raw train features
+    y_train  : np.ndarray of int labels (0 / 1)
+    n_top    : number of features to show
+    """
+    df = train_df.copy()
+    df["__label__"] = y_train
+    means0 = df[df["__label__"] == 0].drop(columns="__label__").mean()
+    means1 = df[df["__label__"] == 1].drop(columns="__label__").mean()
+    stds   = df.drop(columns="__label__").std().replace(0, np.nan)
+    diff   = ((means1 - means0).abs() / stds).fillna(0)
+    top    = diff.sort_values(ascending=False).head(n_top)
+
+    fig, ax = plt.subplots(figsize=(8, max(4, n_top * 0.25)))
+    ax.barh(range(len(top)), top.values[::-1], color="#9b59b6", edgecolor="white")
+    ax.set_yticks(range(len(top)))
+    ax.set_yticklabels(top.index[::-1].astype(str), fontsize=8)
+    ax.set_title(f"Top {n_top} Features by Class Mean Difference  (|Δμ| / σ)")
+    ax.set_xlabel("Standardised Mean Difference")
+    plt.tight_layout()
+    _savefig(fig, "eda_06_top_discriminative_features.png")
+
+
+# ====================================================================
+# MODEL / EVALUATION PLOTS
+# ====================================================================
+
+def plot_model_comparison(all_candidates):
+    """Horizontal bar chart comparing all candidate model CV BCR scores.
+
+    Parameters
+    ----------
+    all_candidates : list of dicts with keys 'name', 'mean', 'std'
+    """
+    names  = [c["name"] for c in all_candidates]
+    means  = [c["mean"] for c in all_candidates]
+    stds   = [c["std"]  for c in all_candidates]
+
+    sorted_idx = np.argsort(means)
+    names  = [names[i] for i in sorted_idx]
+    means  = [means[i] for i in sorted_idx]
+    stds   = [stds[i]  for i in sorted_idx]
+
+    colors = ["#e74c3c" if m == max(means) else "#3498db" for m in means]
+
+    fig, ax = plt.subplots(figsize=(9, max(4, len(names) * 0.55)))
+    bars = ax.barh(names, means, xerr=stds, color=colors, edgecolor="white",
+                   linewidth=0.8, capsize=4, error_kw={"linewidth": 1.2})
+    for bar, m in zip(bars, means):
+        ax.text(m + 0.001, bar.get_y() + bar.get_height() / 2,
+                f"{m:.4f}", va="center", fontsize=9)
+
+    ax.set_xlim(max(0, min(means) - 0.05), min(1, max(means) + 0.06))
+    ax.set_title("Model Comparison — CV Balanced Accuracy (BCR)")
+    ax.set_xlabel("Balanced Accuracy (mean ± std over folds)")
+    ax.axvline(max(means), color="red", linestyle="--", linewidth=0.8, alpha=0.6)
+    plt.tight_layout()
+    _savefig(fig, "model_01_comparison.png")
+
+
+def plot_confusion_matrix(y_true, y_pred, title="Confusion Matrix", filename="eval_01_confusion_matrix.png"):
+    """Annotated confusion matrix heatmap.
+
+    Parameters
+    ----------
+    y_true    : array-like of true labels (int)
+    y_pred    : array-like of predicted labels (int)
+    title     : plot title
+    filename  : output filename
+    """
+    from sklearn.metrics import confusion_matrix
+
+    cm     = confusion_matrix(y_true, y_pred)
+    labels = ["negative (0)", "positive (1)"]
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+    sns.heatmap(
+        cm, annot=True, fmt="d", cmap="Blues",
+        xticklabels=labels, yticklabels=labels,
+        linewidths=0.5, linecolor="white",
+        cbar_kws={"label": "Count"},
+        ax=ax,
+    )
+    ax.set_title(title, pad=12)
+    ax.set_ylabel("True Label")
+    ax.set_xlabel("Predicted Label")
+    plt.tight_layout()
+    _savefig(fig, filename)
+
+
+def plot_fold_bcr_scores(fold_bcr_scores, bcr_hat):
+    """Bar chart of per-fold BCR scores with the OOF BCR as a reference line.
+
+    Parameters
+    ----------
+    fold_bcr_scores : np.ndarray of per-fold BCR values
+    bcr_hat         : float, overall OOF BCR
+    """
+    n_folds = len(fold_bcr_scores)
+    fig, ax = plt.subplots(figsize=(7, 4))
+    ax.bar(range(1, n_folds + 1), fold_bcr_scores,
+           color="#3498db", edgecolor="white", linewidth=0.8)
+    ax.axhline(bcr_hat, color="red", linestyle="--", linewidth=1.2,
+               label=f"OOF BCRhat = {bcr_hat:.4f}")
+    ax.axhline(fold_bcr_scores.mean(), color="#e67e22", linestyle=":",
+               linewidth=1.0, label=f"Fold mean = {fold_bcr_scores.mean():.4f}")
+    for i, v in enumerate(fold_bcr_scores):
+        ax.text(i + 1, v + 0.001, f"{v:.4f}", ha="center", va="bottom", fontsize=9)
+
+    ax.set_title("Per-Fold Balanced Accuracy (BCR)")
+    ax.set_xlabel("Fold")
+    ax.set_ylabel("Balanced Accuracy")
+    ax.set_xticks(range(1, n_folds + 1))
+    ax.set_ylim(max(0, fold_bcr_scores.min() - 0.05), min(1.0, fold_bcr_scores.max() + 0.04))
+    ax.legend(fontsize=9)
+    plt.tight_layout()
+    _savefig(fig, "eval_02_fold_bcr_scores.png")
+
+
+def plot_xgb_feature_importance(xgb_search, top_n=30):
+    """Bar chart of XGBoost feature importances (gain).
+
+    Parameters
+    ----------
+    xgb_search : fitted RandomizedSearchCV with XGBoost best_estimator_
+    top_n      : number of top features to show
+    """
+    try:
+        booster = xgb_search.best_estimator_.named_steps["model"].get_booster()
+        importance = booster.get_score(importance_type="gain")
+    except Exception:
+        print("  [plot] Could not extract XGBoost feature importances — skipping.")
+        return
+
+    if not importance:
+        return
+
+    sorted_imp = sorted(importance.items(), key=lambda x: x[1], reverse=True)[:top_n]
+    features, gains = zip(*sorted_imp)
+
+    fig, ax = plt.subplots(figsize=(9, max(4, top_n * 0.28)))
+    ax.barh(range(len(features)), list(gains)[::-1],
+            color="#f39c12", edgecolor="white")
+    ax.set_yticks(range(len(features)))
+    ax.set_yticklabels(list(features)[::-1], fontsize=8)
+    ax.set_title(f"XGBoost Feature Importance (Gain) — Top {top_n}")
+    ax.set_xlabel("Gain")
+    plt.tight_layout()
+    _savefig(fig, "model_02_xgb_feature_importance.png")
+
+
+def plot_feature_selection_results(fclassif_results, mi_results, pca_results, baseline_bcr):
+    """Line charts comparing feature selection strategies.
+
+    Parameters
+    ----------
+    fclassif_results : list of dicts with 'k', 'mean', 'std'
+    mi_results       : list of dicts with 'k', 'mean', 'std'
+    pca_results      : list of dicts with 'n', 'mean', 'std'
+    baseline_bcr     : float, BCR with all features
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+
+    # ---- SelectKBest ----
+    ax = axes[0]
+    for results, label, color in [
+        (fclassif_results, "f_classif", "#3498db"),
+        (mi_results,       "mutual_info", "#e74c3c"),
+    ]:
+        ks    = [r["k"] if r["k"] != "all" else 1024 for r in results]
+        means = [r["mean"] for r in results]
+        stds  = [r["std"]  for r in results]
+        ax.errorbar(ks, means, yerr=stds, marker="o", label=label,
+                    color=color, linewidth=1.5, capsize=3)
+    ax.axhline(baseline_bcr, linestyle="--", color="gray",
+               linewidth=1.0, label=f"Baseline (all) = {baseline_bcr:.4f}")
+    ax.set_title("SelectKBest: k vs BCR")
+    ax.set_xlabel("k (number of features selected)")
+    ax.set_ylabel("CV Balanced Accuracy")
+    ax.legend(fontsize=9)
+    ax.set_xticks([r["k"] if r["k"] != "all" else 1024 for r in fclassif_results])
+    ax.set_xticklabels([str(r["k"]) for r in fclassif_results], rotation=30)
+
+    # ---- PCA ----
+    ax = axes[1]
+    ns    = [r["n"]    for r in pca_results]
+    means = [r["mean"] for r in pca_results]
+    stds  = [r["std"]  for r in pca_results]
+    ax.errorbar(ns, means, yerr=stds, marker="s", color="#9b59b6",
+                linewidth=1.5, capsize=3, label="PCA")
+    ax.axhline(baseline_bcr, linestyle="--", color="gray",
+               linewidth=1.0, label=f"Baseline (all) = {baseline_bcr:.4f}")
+    ax.set_title("PCA: n_components vs BCR")
+    ax.set_xlabel("n_components")
+    ax.set_ylabel("CV Balanced Accuracy")
+    ax.legend(fontsize=9)
+
+    fig.suptitle("Feature Selection Strategy Comparison", fontweight="bold")
+    plt.tight_layout()
+    _savefig(fig, "feat_01_selection_comparison.png")
+
+
+def plot_hyperparameter_search_results(search, model_name, param_name, filename):
+    """Strip / scatter plot showing CV BCR across all RandomizedSearchCV trials.
+
+    Parameters
+    ----------
+    search     : fitted RandomizedSearchCV object
+    model_name : display name for the title
+    param_name : which hyperparameter to show on x-axis (best-effort)
+    filename   : output filename
+    """
+    results = search.cv_results_
+    means   = results["mean_test_score"]
+    stds    = results["std_test_score"]
+    ranks   = results["rank_test_score"]
+
+    fig, ax = plt.subplots(figsize=(9, 4))
+    ax.scatter(range(len(means)), means, c=ranks, cmap="RdYlGn_r",
+               s=30, alpha=0.7)
+    ax.fill_between(range(len(means)),
+                    means - stds, means + stds,
+                    alpha=0.15, color="#3498db")
+    best_idx = search.best_index_
+    ax.scatter(best_idx, means[best_idx], marker="*", s=180,
+               color="red", zorder=5, label=f"Best = {means[best_idx]:.4f}")
+    ax.set_title(f"{model_name} — RandomizedSearch CV BCR per Trial")
+    ax.set_xlabel("Trial index")
+    ax.set_ylabel("CV Balanced Accuracy")
+    ax.legend(fontsize=9)
+    plt.tight_layout()
+    _savefig(fig, filename)

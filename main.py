@@ -7,6 +7,7 @@
 #   python main.py
 
 import warnings
+import time
 import numpy as np
 
 # Suppress common non-critical sklearn convergence warnings during search.
@@ -27,40 +28,73 @@ from models import (
 from feature_selection import run_feature_selection
 from evaluation import run_evaluation
 from predict import run_predictions
+from config import N_JOBS, PLOTS_DIR, _n_physical
 
+
+# ====================================================================
+# Helpers
+# ====================================================================
+
+def _phase_header(n, title):
+    """Print a consistent phase header with a timestamp."""
+    ts = time.strftime("%H:%M:%S")
+    print(f"\n{'#' * 60}")
+    print(f"# PHASE {n} -- {title}")
+    print(f"# Started at {ts}")
+    print("#" * 60)
+
+
+def _phase_footer(title, elapsed):
+    """Print a consistent phase footer with elapsed time."""
+    mins, secs = divmod(int(elapsed), 60)
+    print(f"\n  ✓ Phase '{title}' completed in {mins}m {secs:02d}s")
+
+
+# ====================================================================
+# Main
+# ====================================================================
 
 def main():
+    pipeline_start = time.time()
+
     print("=" * 60)
-    print("A5 TOXICITY CLASSIFICATION -- FULL PIPELINE")
+    print("  A5 TOXICITY CLASSIFICATION -- FULL PIPELINE")
+    print(f"  Mac Studio: {_n_physical} logical CPUs, n_jobs={N_JOBS}")
+    print(f"  Plots directory: {PLOTS_DIR}")
+    print(f"  Started at {time.strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 60)
 
     # ------------------------------------------------------------------
     # PHASE 1 -- Data Loading and Exploration
     # ------------------------------------------------------------------
-    print("\n" + "#" * 60)
-    print("# PHASE 1 -- LOADING DATA AND EXPLORATORY DATA ANALYSIS")
-    print("#" * 60)
-    print("\nLoading data...")
+    _phase_header(1, "LOADING DATA AND EXPLORATORY DATA ANALYSIS")
+    t1 = time.time()
+
+    print("\n  Loading CSV files...")
     X_train, y_train, X_test, train_df, test_df, labels_series = load_data()
+    print(f"  X_train : {X_train.shape}   X_test : {X_test.shape}   y_train : {y_train.shape}")
 
-    eda_summary = run_eda(train_df, test_df, labels_series)
-
+    eda_summary = run_eda(train_df, test_df, labels_series, y_train=y_train)
     is_imbalanced = eda_summary["is_imbalanced"]
+
+    _phase_footer("LOADING DATA AND EDA", time.time() - t1)
 
     # ------------------------------------------------------------------
     # PHASE 2 -- Preprocessing Pipeline
     # ------------------------------------------------------------------
-    print("\n" + "#" * 60)
-    print("# PHASE 2 -- PREPROCESSING PIPELINE")
-    print("#" * 60)
+    _phase_header(2, "PREPROCESSING PIPELINE")
+    t2 = time.time()
+
     preprocessor = build_preprocessor(eda_summary)
+
+    _phase_footer("PREPROCESSING PIPELINE", time.time() - t2)
 
     # ------------------------------------------------------------------
     # PHASE 3 -- Baseline Models
     # ------------------------------------------------------------------
-    print("\n" + "#" * 60)
-    print("# PHASE 3 -- BASELINE MODELS")
-    print("#" * 60)
+    _phase_header(3, "BASELINE MODELS")
+    t3 = time.time()
+
     baseline_results, lr_pipeline, rf_pipeline = run_baseline(
         preprocessor, X_train, y_train, is_imbalanced
     )
@@ -73,36 +107,37 @@ def main():
             "Verify data loading and label alignment before continuing."
         )
 
+    _phase_footer("BASELINE MODELS", time.time() - t3)
+
     # ------------------------------------------------------------------
     # PHASE 4 -- Hyperparameter Tuning
     # ------------------------------------------------------------------
-    print("\n" + "#" * 60)
-    print("# PHASE 4 -- HYPERPARAM TUNING")
-    print("#" * 60)
-    # Tune XGBoost.
+    _phase_header(4, "HYPERPARAMETER TUNING")
+    t4 = time.time()
+
     xgb_search = tune_xgboost(preprocessor, X_train, y_train)
-
-    # Tune SVM with probability=True so it can be used in soft voting.
     svm_search = tune_svm(preprocessor, X_train, y_train, with_probability=True)
-
-    # Tune MLP.
     mlp_search = tune_mlp(preprocessor, X_train, y_train)
 
-    # Build soft voting ensemble from the best single models.
     ensemble, ensemble_scores = build_voting_ensemble(
         xgb_search, svm_search, mlp_search,
         preprocessor, X_train, y_train,
     )
 
-    # Select the overall best pipeline.
     best_pipeline, best_name, summary_table = select_best_model(
         baseline_results, xgb_search, svm_search,
         mlp_search, ensemble, ensemble_scores,
     )
 
-    # The best BCR from Phase 4 is used as the baseline for Phase 5.
-    # Extract the best CV BCR mean from the chosen model.
-    # For search objects, use best_score_; for ensemble, use ensemble_scores.
+    # XGBoost feature importance plot.
+    if xgb_search is not None:
+        try:
+            from plots import plot_xgb_feature_importance
+            plot_xgb_feature_importance(xgb_search, top_n=30)
+        except Exception:
+            pass
+
+    # Determine the best CV BCR for Phase 5.
     if best_name == "Voting Ensemble":
         phase4_bcr = ensemble_scores.mean()
     elif best_name == "XGBoost (tuned)" and xgb_search is not None:
@@ -117,48 +152,63 @@ def main():
             baseline_results["rf"]["mean"],
         )
 
+    _phase_footer("HYPERPARAMETER TUNING", time.time() - t4)
+
     # ------------------------------------------------------------------
     # PHASE 5 -- Feature Selection
     # ------------------------------------------------------------------
-    print("\n" + "#" * 60)
-    print("# PHASE 5 -- FEATURE SELECTION")
-    print("#" * 60)
+    _phase_header(5, "FEATURE SELECTION")
+    t5 = time.time()
+
     final_pipeline, selection_description = run_feature_selection(
         preprocessor, best_pipeline, X_train, y_train, baseline_bcr=phase4_bcr
     )
-    print(f"Feature selection decision: {selection_description}")
+    print(f"\n  Feature selection decision: {selection_description}")
+
+    _phase_footer("FEATURE SELECTION", time.time() - t5)
 
     # ------------------------------------------------------------------
     # PHASE 6 -- Final Model Training and BCRhat Estimation
     # ------------------------------------------------------------------
-    print("\n" + "#" * 60)
-    print("# PHASE 6 -- FINAL MODEL TRAINING AND BCRHAT ESTIMATION")
-    print("#" * 60)
+    _phase_header(6, "FINAL MODEL TRAINING AND BCRHAT ESTIMATION")
+    t6 = time.time()
+
     fitted_pipeline, bcr_hat, sigma, fold_bcr_scores = run_evaluation(
         final_pipeline, X_train, y_train
     )
 
-    print("\n" + "=" * 60)
-    print("FINAL RESULTS SUMMARY")
-    print("=" * 60)
-    print(f"Best model             : {best_name}")
-    print(f"Feature selection      : {selection_description}")
-    print(f"BCRhat (to submit)     : {bcr_hat:.4f}")
-    print(f"sigma                  : {sigma:.4f}")
-    print(f"Per-fold BCR scores    : {np.array2string(fold_bcr_scores, precision=4)}")
-    print(f"Confidence interval    : "
-          f"[{bcr_hat - 1.96 * sigma:.4f}, {bcr_hat + 1.96 * sigma:.4f}]")
-    print("=" * 60)
+    _phase_footer("FINAL MODEL TRAINING", time.time() - t6)
 
     # ------------------------------------------------------------------
     # PHASE 7 -- Generate and Save Predictions
     # ------------------------------------------------------------------
-    print("\n" + "#" * 60)
-    print("# PHASE 7 -- Generating Predictions")
-    print("#" * 60)
+    _phase_header(7, "GENERATING PREDICTIONS")
+    t7 = time.time()
+
     run_predictions(fitted_pipeline, X_test)
 
-    print("\nPipeline complete. Submit 'predictions.csv' and BCRhat =", round(bcr_hat, 4))
+    _phase_footer("GENERATING PREDICTIONS", time.time() - t7)
+
+    # ------------------------------------------------------------------
+    # FINAL SUMMARY
+    # ------------------------------------------------------------------
+    total_elapsed = time.time() - pipeline_start
+    total_mins, total_secs = divmod(int(total_elapsed), 60)
+
+    print("\n" + "=" * 60)
+    print("  FINAL RESULTS SUMMARY")
+    print("=" * 60)
+    print(f"  Best model             : {best_name}")
+    print(f"  Feature selection      : {selection_description}")
+    print(f"  BCRhat (to submit)     : {bcr_hat:.4f}")
+    print(f"  sigma                  : {sigma:.4f}")
+    print(f"  Per-fold BCR scores    : {np.array2string(fold_bcr_scores, precision=4)}")
+    print(f"  Confidence interval    : "
+          f"[{bcr_hat - 1.96 * sigma:.4f}, {bcr_hat + 1.96 * sigma:.4f}]")
+    print(f"  Plots saved to         : {PLOTS_DIR}/")
+    print(f"  Total pipeline time    : {total_mins}m {total_secs:02d}s")
+    print("=" * 60)
+    print(f"\n  Submit 'predictions.csv' and BCRhat = {round(bcr_hat, 4)}")
 
 
 if __name__ == "__main__":

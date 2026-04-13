@@ -3,6 +3,7 @@
 # Edit this file to change file paths or global settings.
 
 import os
+import multiprocessing
 
 # -------------------------------------------------------------------
 # File paths (relative to the working directory where main.py is run)
@@ -11,6 +12,11 @@ TRAIN_FEATURES_PATH = "./A5_2026_train.csv"
 TRAIN_LABELS_PATH   = "./A5_2026_train_labels.csv"
 TEST_FEATURES_PATH  = "./A5_2026_test.csv"
 PREDICTIONS_PATH    = "./predictions.csv"
+
+# -------------------------------------------------------------------
+# Output directory for plots
+# -------------------------------------------------------------------
+PLOTS_DIR = "./plots"
 
 # -------------------------------------------------------------------
 # Label encoding convention
@@ -25,6 +31,12 @@ REVERSE_LABEL_MAP = {1: "positive", 0: "negative"}
 # -------------------------------------------------------------------
 CV_N_SPLITS   = 5
 CV_RANDOM_STATE = 42
+
+# -------------------------------------------------------------------
+# Parallelism -- use all available CPU cores on the Mac Studio
+# -------------------------------------------------------------------
+N_JOBS = -1  
+_n_physical = multiprocessing.cpu_count()
 
 # -------------------------------------------------------------------
 # Imbalance threshold: flag if minority class is below this fraction
@@ -53,10 +65,11 @@ DIST_SHIFT_THRESHOLD = 0.5
 
 # -------------------------------------------------------------------
 # RandomizedSearchCV iterations per model
+# More iterations = better search coverage (Mac Studio handles it)
 # -------------------------------------------------------------------
-XGB_N_ITER = 50
-SVM_N_ITER = 40
-MLP_N_ITER = 30
+XGB_N_ITER = 80
+SVM_N_ITER = 50
+MLP_N_ITER = 40
 
 # -------------------------------------------------------------------
 # Random seed used everywhere for reproducibility
