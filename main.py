@@ -22,7 +22,7 @@ from models import (
     tune_xgboost,
     tune_svm,
     tune_mlp,
-    build_voting_ensemble,
+    build_stacking_ensemble,
     select_best_model,
 )
 from feature_selection import run_feature_selection
@@ -119,7 +119,7 @@ def main():
     svm_search = tune_svm(preprocessor, X_train, y_train, with_probability=True)
     mlp_search = tune_mlp(preprocessor, X_train, y_train)
 
-    ensemble, ensemble_scores = build_voting_ensemble(
+    ensemble, ensemble_scores = build_stacking_ensemble(
         xgb_search, svm_search, mlp_search,
         preprocessor, X_train, y_train,
     )
@@ -138,7 +138,7 @@ def main():
             pass
 
     # Determine the best CV BCR for Phase 5.
-    if best_name == "Voting Ensemble":
+    if best_name == "Stacking Ensemble":
         phase4_bcr = ensemble_scores.mean()
     elif best_name == "XGBoost (tuned)" and xgb_search is not None:
         phase4_bcr = xgb_search.best_score_
@@ -173,7 +173,7 @@ def main():
     _phase_header(6, "FINAL MODEL TRAINING AND BCRHAT ESTIMATION")
     t6 = time.time()
 
-    fitted_pipeline, bcr_hat, sigma, fold_bcr_scores = run_evaluation(
+    fitted_pipeline, bcr_hat, sigma, fold_bcr_scores, optimal_threshold = run_evaluation(
         final_pipeline, X_train, y_train
     )
 
@@ -185,7 +185,7 @@ def main():
     _phase_header(7, "GENERATING PREDICTIONS")
     t7 = time.time()
 
-    run_predictions(fitted_pipeline, X_test)
+    run_predictions(fitted_pipeline, X_test, threshold=optimal_threshold)
 
     _phase_footer("GENERATING PREDICTIONS", time.time() - t7)
 
@@ -201,6 +201,7 @@ def main():
     print(f"  Best model             : {best_name}")
     print(f"  Feature selection      : {selection_description}")
     print(f"  BCRhat (to submit)     : {bcr_hat:.4f}")
+    print(f"  Optimal threshold      : {optimal_threshold:.2f}")
     print(f"  sigma                  : {sigma:.4f}")
     print(f"  Per-fold BCR scores    : {np.array2string(fold_bcr_scores, precision=4)}")
     print(f"  Confidence interval    : "
