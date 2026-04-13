@@ -17,7 +17,7 @@ from copy import deepcopy
 
 from sklearn.pipeline import Pipeline
 from sklearn.linear_model import LogisticRegression
-from sklearn.ensemble import RandomForestClassifier, VotingClassifier
+from sklearn.ensemble import RandomForestClassifier, StackingClassifier
 from sklearn.svm import SVC
 from sklearn.neural_network import MLPClassifier
 from sklearn.model_selection import (
@@ -27,7 +27,14 @@ from sklearn.model_selection import (
 )
 
 try:
-    import xgboost as xgb
+    import imblearn  # noqa: F401  -- presence check only
+    IMBLEARN_AVAILABLE = True
+except ImportError:
+    IMBLEARN_AVAILABLE = False
+    print("WARNING: imbalanced-learn not installed. SMOTE will be skipped.")
+
+try:
+    import xgboost  # noqa: F401  -- presence check only
     XGB_AVAILABLE = True
 except ImportError:
     XGB_AVAILABLE = False
@@ -42,6 +49,26 @@ from config import (
     MLP_N_ITER,
     N_JOBS,
 )
+
+
+def _make_pipeline(preprocessor, model):
+    """Build a pipeline with SMOTE (when imblearn is available) between preprocessor and model.
+
+    Using ImbPipeline ensures SMOTE is applied only on the training fold during
+    cross-validation, never on the validation fold — no data leakage.
+    """
+    if IMBLEARN_AVAILABLE:
+        from imblearn.pipeline import Pipeline as ImbPipeline
+        from imblearn.over_sampling import SMOTE
+        return ImbPipeline([
+            ("preprocessor", deepcopy(preprocessor)),
+            ("smote",        SMOTE(random_state=RANDOM_STATE)),
+            ("model",        model),
+        ])
+    return Pipeline([
+        ("preprocessor", deepcopy(preprocessor)),
+        ("model",        model),
+    ])
 
 
 def get_cv():
@@ -176,21 +203,20 @@ def tune_xgboost(preprocessor, X_train, y_train):
         print("  XGBoost not available -- skipping.")
         return None
 
-    print(f"\n  Tuning XGBoost  ({XGB_N_ITER} iterations × {CV_N_SPLITS} folds "
+    import xgboost as xgb
+
+    print(f"\n  Tuning XGBoost  ({XGB_N_ITER} iterations x {CV_N_SPLITS} folds "
           f"= {XGB_N_ITER * CV_N_SPLITS} fits)...")
     t0 = time.time()
 
-    xgb_pipeline = Pipeline([
-        ("preprocessor", deepcopy(preprocessor)),
-        ("model", xgb.XGBClassifier(
-            objective="binary:logistic",
-            eval_metric="logloss",
-            tree_method="hist",      # fastest CPU tree builder
-            device="cpu",
-            nthread=-1,              # use all cores inside XGBoost
-            random_state=RANDOM_STATE,
-        )),
-    ])
+    xgb_pipeline = _make_pipeline(preprocessor, xgb.XGBClassifier(
+        objective="binary:logistic",
+        eval_metric="logloss",
+        tree_method="hist",      # fastest CPU tree builder
+        device="cpu",
+        nthread=-1,              # use all cores inside XGBoost
+        random_state=RANDOM_STATE,
+    ))
 
     xgb_param_dist = {
         "model__n_estimators"     : [200, 400, 600, 800, 1000],
@@ -198,7 +224,7 @@ def tune_xgboost(preprocessor, X_train, y_train):
         "model__learning_rate"    : [0.005, 0.01, 0.05, 0.1, 0.2],
         "model__subsample"        : [0.6, 0.7, 0.8, 0.9, 1.0],
         "model__colsample_bytree" : [0.4, 0.5, 0.7, 0.9, 1.0],
-        "model__scale_pos_weight" : [1, 2, 3, 5],
+        "model__scale_pos_weight" : [1, 3, 5, 7, 9, 12],   # ratio réel = 9
         "model__reg_alpha"        : [0, 0.01, 0.1, 0.5],
         "model__reg_lambda"       : [0.5, 1, 2, 5],
         "model__min_child_weight" : [1, 3, 5],
@@ -250,16 +276,13 @@ def tune_svm(preprocessor, X_train, y_train, with_probability=True):
           f"= {SVM_N_ITER * CV_N_SPLITS} fits)...")
     t0 = time.time()
 
-    svm_pipeline = Pipeline([
-        ("preprocessor", deepcopy(preprocessor)),
-        ("model", SVC(
-            kernel="rbf",
-            class_weight="balanced",
-            probability=with_probability,
-            random_state=RANDOM_STATE,
-            cache_size=2000,         # larger cache improves speed with 1024-d data
-        )),
-    ])
+    svm_pipeline = _make_pipeline(preprocessor, SVC(
+        kernel="rbf",
+        class_weight="balanced",
+        probability=with_probability,
+        random_state=RANDOM_STATE,
+        cache_size=2000,         # larger cache improves speed with 1024-d data
+    ))
 
     svm_param_dist = {
         "model__C"     : np.logspace(-2, 3, 30),
@@ -306,16 +329,13 @@ def tune_mlp(preprocessor, X_train, y_train):
           f"= {MLP_N_ITER * CV_N_SPLITS} fits)...")
     t0 = time.time()
 
-    mlp_pipeline = Pipeline([
-        ("preprocessor", deepcopy(preprocessor)),
-        ("model", MLPClassifier(
-            max_iter=500,
-            early_stopping=True,
-            validation_fraction=0.1,
-            random_state=RANDOM_STATE,
-            verbose=False,
-        )),
-    ])
+    mlp_pipeline = _make_pipeline(preprocessor, MLPClassifier(
+        max_iter=500,
+        early_stopping=True,
+        validation_fraction=0.1,
+        random_state=RANDOM_STATE,
+        verbose=False,
+    ))
 
     mlp_param_dist = {
         "model__hidden_layer_sizes" : [
@@ -359,16 +379,21 @@ def tune_mlp(preprocessor, X_train, y_train):
     return search
 
 
-def build_voting_ensemble(xgb_search, svm_search, mlp_search,
-                          preprocessor, X_train, y_train):
-    """Combine the three best estimators in a soft VotingClassifier.
+def build_stacking_ensemble(xgb_search, svm_search, mlp_search,
+                            preprocessor, X_train, y_train):
+    """Combine the three best estimators in a StackingClassifier.
+
+    Each base pipeline (preprocessor + SMOTE + model) is already self-contained.
+    A LogisticRegression meta-learner is trained on the out-of-fold predictions
+    produced by those base pipelines, which is strictly more powerful than
+    the simple probability average used by VotingClassifier.
 
     Returns
     -------
-    ensemble : fitted VotingClassifier
+    ensemble : StackingClassifier (not yet re-fitted on all data here)
     ensemble_scores : np.ndarray of per-fold BCR scores
     """
-    print("\n  Building soft voting ensemble...")
+    print("\n  Building stacking ensemble (LogReg meta-learner)...")
     t0 = time.time()
 
     estimators = []
@@ -380,16 +405,24 @@ def build_voting_ensemble(xgb_search, svm_search, mlp_search,
         estimators.append(("mlp", mlp_search.best_estimator_))
 
     if len(estimators) < 2:
-        print("  Not enough models for an ensemble -- returning None.")
+        print("  Not enough models for stacking -- returning None.")
         return None, np.array([])
 
-    ensemble = VotingClassifier(
-        estimators=estimators,
-        voting="soft",
-        n_jobs=1,
+    meta_learner = LogisticRegression(
+        class_weight="balanced",
+        max_iter=1000,
+        random_state=RANDOM_STATE,
     )
 
-    print(f"  Evaluating ensemble over {CV_N_SPLITS} folds...")
+    ensemble = StackingClassifier(
+        estimators=estimators,
+        final_estimator=meta_learner,
+        cv=get_cv(),
+        n_jobs=1,
+        passthrough=False,
+    )
+
+    print(f"  Evaluating stacking ensemble over {CV_N_SPLITS} folds...")
     ensemble_scores = cross_val_score(
         ensemble, X_train, y_train,
         cv=get_cv(), scoring="balanced_accuracy", n_jobs=1,
@@ -397,8 +430,8 @@ def build_voting_ensemble(xgb_search, svm_search, mlp_search,
     )
 
     elapsed = time.time() - t0
-    print(f"\n  Ensemble done in {elapsed:.1f}s")
-    print(f"  Ensemble BCR: {ensemble_scores.mean():.4f} +/- {ensemble_scores.std():.4f}")
+    print(f"\n  Stacking ensemble done in {elapsed:.1f}s")
+    print(f"  Stacking Ensemble BCR: {ensemble_scores.mean():.4f} +/- {ensemble_scores.std():.4f}")
     return ensemble, ensemble_scores
 
 
@@ -453,7 +486,7 @@ def select_best_model(baseline_results, xgb_search, svm_search,
     _add("MLP (tuned)",     mlp_search)
 
     if ensemble is not None and len(ensemble_scores) > 0:
-        _add("Voting Ensemble", ensemble_scores, is_ensemble=True)
+        _add("Stacking Ensemble", ensemble_scores, is_ensemble=True)
 
     print("  " + "-" * 55)
 
@@ -470,7 +503,7 @@ def select_best_model(baseline_results, xgb_search, svm_search,
 
     best_single = max(runnable, key=lambda c: c["mean"])
     ensemble_candidate = next(
-        (c for c in runnable if c["name"] == "Voting Ensemble"), None
+        (c for c in runnable if c["name"] == "Stacking Ensemble"), None
     )
 
     if (ensemble_candidate is not None and
