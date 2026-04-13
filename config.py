@@ -85,3 +85,27 @@ SELECT_K_VALUES = [100, 200, 300, 500, "all"]
 # PCA n_components values to try
 # -------------------------------------------------------------------
 PCA_N_VALUES = [50, 100, 200, 300]
+
+# -------------------------------------------------------------------
+# Phase 6 evaluation CV — deliberately different from CV_RANDOM_STATE
+# to produce independent folds and reduce optimism bias (WCCI 2006).
+# 10 folds gives a lower-variance estimate than 5.
+# -------------------------------------------------------------------
+EVAL_N_SPLITS     = 10
+EVAL_RANDOM_STATE = 99   # != CV_RANDOM_STATE → independent from tuning folds
+
+# -------------------------------------------------------------------
+# BCR shrinkage: predicted_BCR = bcr_hat - SHRINKAGE_ALPHA * sigma
+# Corrects the documented optimism bias of CV estimates.
+# -------------------------------------------------------------------
+SHRINKAGE_ALPHA = 0.5
+
+# -------------------------------------------------------------------
+# Seeds used for multi-seed robustness evaluation (Phase 6)
+# -------------------------------------------------------------------
+ROBUSTNESS_SEEDS = [42, 0, 7, 123, 2026]
+
+# -------------------------------------------------------------------
+# Root directory for per-run output (timestamped subfolders)
+# -------------------------------------------------------------------
+RESULTS_DIR = "./results"
