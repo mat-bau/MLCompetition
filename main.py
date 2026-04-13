@@ -8,6 +8,7 @@
 
 import warnings
 import time
+import os
 import numpy as np
 
 # Suppress common non-critical sklearn convergence warnings during search.
@@ -24,11 +25,20 @@ from models import (
     tune_mlp,
     build_stacking_ensemble,
     select_best_model,
+    evaluate_robustness,
 )
 from feature_selection import run_feature_selection
 from evaluation import run_evaluation
 from predict import run_predictions
-from config import N_JOBS, PLOTS_DIR, _n_physical
+from run_manager import (
+    create_run_dir,
+    setup_logging,
+    save_config,
+    save_metrics,
+    copy_predictions,
+)
+import config as _cfg
+from config import N_JOBS, PREDICTIONS_PATH, RESULTS_DIR, _n_physical
 
 
 # ====================================================================
@@ -57,10 +67,23 @@ def _phase_footer(title, elapsed):
 def main():
     pipeline_start = time.time()
 
+    # ------------------------------------------------------------------
+    # RUN SETUP — timestamped output directory + logging
+    # ------------------------------------------------------------------
+    run_dir   = create_run_dir(RESULTS_DIR)
+    tee       = setup_logging(run_dir)
+    plots_dir = os.path.join(run_dir, "plots")
+
+    # Redirect all plot output to the per-run plots folder.
+    _cfg.PLOTS_DIR = plots_dir
+
+    save_config(run_dir)
+
     print("=" * 60)
     print("  A5 TOXICITY CLASSIFICATION -- FULL PIPELINE")
     print(f"  Mac Studio: {_n_physical} logical CPUs, n_jobs={N_JOBS}")
-    print(f"  Plots directory: {PLOTS_DIR}")
+    print(f"  Run directory  : {run_dir}")
+    print(f"  Plots directory: {plots_dir}")
     print(f"  Started at {time.strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 60)
 
@@ -74,7 +97,7 @@ def main():
     X_train, y_train, X_test, train_df, test_df, labels_series = load_data()
     print(f"  X_train : {X_train.shape}   X_test : {X_test.shape}   y_train : {y_train.shape}")
 
-    eda_summary = run_eda(train_df, test_df, labels_series, y_train=y_train)
+    eda_summary   = run_eda(train_df, test_df, labels_series, y_train=y_train)
     is_imbalanced = eda_summary["is_imbalanced"]
 
     _phase_footer("LOADING DATA AND EDA", time.time() - t1)
@@ -129,11 +152,22 @@ def main():
         mlp_search, ensemble, ensemble_scores,
     )
 
-    # XGBoost feature importance plot.
+    # XGBoost feature importance + CV scatter plots.
     if xgb_search is not None:
         try:
-            from plots import plot_xgb_feature_importance
+            from plots import plot_xgb_feature_importance, plot_cv_scatter
             plot_xgb_feature_importance(xgb_search, top_n=30)
+            plot_cv_scatter(xgb_search, "XGBoost",
+                            "model__learning_rate", "model__max_depth",
+                            "model_03b_xgb_cv_scatter.png")
+        except Exception:
+            pass
+    if svm_search is not None:
+        try:
+            from plots import plot_cv_scatter
+            plot_cv_scatter(svm_search, "SVM (RBF)",
+                            "model__C", "model__gamma",
+                            "model_04b_svm_cv_scatter.png")
         except Exception:
             pass
 
@@ -173,9 +207,22 @@ def main():
     _phase_header(6, "FINAL MODEL TRAINING AND BCRHAT ESTIMATION")
     t6 = time.time()
 
-    fitted_pipeline, bcr_hat, sigma, fold_bcr_scores, optimal_threshold = run_evaluation(
+    (fitted_pipeline, bcr_hat, sigma_used, fold_bcr_scores,
+     optimal_threshold, predicted_bcr, sigma_theoretical) = run_evaluation(
         final_pipeline, X_train, y_train
     )
+
+    # Multi-seed robustness (on the final pipeline, before fitting on all data).
+    robustness_mean, robustness_score, seed_results = evaluate_robustness(
+        final_pipeline, X_train, y_train
+    )
+
+    # Learning curve diagnostic.
+    try:
+        from plots import plot_learning_curve
+        plot_learning_curve(final_pipeline, X_train, y_train)
+    except Exception as exc:
+        print(f"  [plot] Learning curve skipped: {exc}")
 
     _phase_footer("FINAL MODEL TRAINING", time.time() - t6)
 
@@ -186,8 +233,27 @@ def main():
     t7 = time.time()
 
     run_predictions(fitted_pipeline, X_test, threshold=optimal_threshold)
+    copy_predictions(PREDICTIONS_PATH, run_dir)
 
     _phase_footer("GENERATING PREDICTIONS", time.time() - t7)
+
+    # ------------------------------------------------------------------
+    # Persist metrics for this run.
+    # ------------------------------------------------------------------
+    save_metrics(run_dir, {
+        "model"              : best_name,
+        "feature_selection"  : selection_description,
+        "bcr_hat"            : round(float(bcr_hat), 6),
+        "predicted_bcr"      : round(float(predicted_bcr), 6),
+        "BER_guess"          : round(float(1 - predicted_bcr), 6),
+        "sigma_empirical"    : round(float(sigma_used), 6),
+        "sigma_theoretical"  : round(float(sigma_theoretical), 6),
+        "optimal_threshold"  : round(float(optimal_threshold), 4),
+        "robustness_score"   : round(float(robustness_score), 6),
+        "robustness_mean"    : round(float(robustness_mean), 6),
+        "per_fold_bcr"       : [round(float(v), 6) for v in fold_bcr_scores],
+        "n_eval_folds"       : int(len(fold_bcr_scores)),
+    })
 
     # ------------------------------------------------------------------
     # FINAL SUMMARY
@@ -200,16 +266,23 @@ def main():
     print("=" * 60)
     print(f"  Best model             : {best_name}")
     print(f"  Feature selection      : {selection_description}")
-    print(f"  BCRhat (to submit)     : {bcr_hat:.4f}")
+    print(f"  BCRhat (OOF)           : {bcr_hat:.4f}")
+    print(f"  σ used                 : {sigma_used:.4f}")
+    print(f"  predicted_BCR          : {predicted_bcr:.4f}  ← conservative estimate")
+    print(f"  BER_guess (to submit)  : {1 - predicted_bcr:.4f}  ← value to give to INGInious")
     print(f"  Optimal threshold      : {optimal_threshold:.2f}")
-    print(f"  sigma                  : {sigma:.4f}")
+    print(f"  Robustness score       : {robustness_score:.4f}  "
+          f"({'stable' if robustness_score < 0.01 else 'moderate' if robustness_score < 0.02 else 'unstable'})")
     print(f"  Per-fold BCR scores    : {np.array2string(fold_bcr_scores, precision=4)}")
     print(f"  Confidence interval    : "
-          f"[{bcr_hat - 1.96 * sigma:.4f}, {bcr_hat + 1.96 * sigma:.4f}]")
-    print(f"  Plots saved to         : {PLOTS_DIR}/")
+          f"[{bcr_hat - 1.96*sigma_used:.4f}, {bcr_hat + 1.96*sigma_used:.4f}]")
+    print(f"  Run directory          : {run_dir}")
     print(f"  Total pipeline time    : {total_mins}m {total_secs:02d}s")
     print("=" * 60)
-    print(f"\n  Submit 'predictions.csv' and BCRhat = {round(bcr_hat, 4)}")
+    print(f"\n  ▶ Submit 'predictions.csv'")
+    print(f"  ▶ Submit BER_guess = {round(1 - predicted_bcr, 4)}")
+
+    tee.close()
 
 
 if __name__ == "__main__":
