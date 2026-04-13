@@ -17,11 +17,35 @@ from sklearn.metrics import (
 from config import CV_N_SPLITS, CV_RANDOM_STATE
 
 
+def _scan_threshold(y_true, oof_probas):
+    """Find the decision threshold that maximises BCR on OOF predictions.
+
+    Parameters
+    ----------
+    y_true     : np.ndarray of true binary labels
+    oof_probas : np.ndarray of shape (n_samples,) — P(class=1) for each sample
+
+    Returns
+    -------
+    optimal_threshold : float in [0.05, 0.95]
+    optimal_bcr       : float, BCR at that threshold
+    """
+    thresholds = np.linspace(0.05, 0.95, 91)
+    bcr_at_t = np.array([
+        balanced_accuracy_score(y_true, (oof_probas >= t).astype(int))
+        for t in thresholds
+    ])
+    best_idx          = int(np.argmax(bcr_at_t))
+    optimal_threshold = float(thresholds[best_idx])
+    optimal_bcr       = float(bcr_at_t[best_idx])
+    return optimal_threshold, optimal_bcr
+
+
 def compute_oof_bcr(pipeline, X_train, y_train):
     """Collect out-of-fold predictions and compute the OOF BCR.
 
-    Each sample is predicted by a model trained on the other folds only,
-    making this an unbiased estimate of generalization performance.
+    Uses predict_proba to enable threshold scanning.  Falls back to
+    predict (threshold=0.5) if the pipeline does not expose probabilities.
 
     Parameters
     ----------
@@ -31,8 +55,9 @@ def compute_oof_bcr(pipeline, X_train, y_train):
 
     Returns
     -------
-    bcr_hat    : float, balanced accuracy on all OOF predictions
-    oof_preds  : np.ndarray of OOF predictions
+    bcr_hat           : float, BCR at the optimal threshold
+    oof_preds         : np.ndarray of OOF predictions (at optimal threshold)
+    optimal_threshold : float, the threshold that maximises BCR
     """
     cv = StratifiedKFold(
         n_splits=CV_N_SPLITS, shuffle=True, random_state=CV_RANDOM_STATE
@@ -42,15 +67,38 @@ def compute_oof_bcr(pipeline, X_train, y_train):
           f"{CV_N_SPLITS}× on sub-splits)...")
     t0 = time.time()
 
-    oof_preds = cross_val_predict(
-        pipeline, X_train, y_train,
-        cv=cv, method="predict",
-        verbose=1,
-    )
+    try:
+        oof_probas = cross_val_predict(
+            pipeline, X_train, y_train,
+            cv=cv, method="predict_proba",
+            verbose=1,
+        )[:, 1]
 
-    bcr_hat = balanced_accuracy_score(y_train, oof_preds)
-    print(f"  OOF prediction done in {time.time() - t0:.1f}s  |  BCRhat = {bcr_hat:.4f}")
-    return bcr_hat, oof_preds
+        # BCR at default threshold for reference.
+        bcr_default = balanced_accuracy_score(
+            y_train, (oof_probas >= 0.5).astype(int)
+        )
+
+        # Scan thresholds and pick the best one.
+        optimal_threshold, optimal_bcr = _scan_threshold(y_train, oof_probas)
+        oof_preds = (oof_probas >= optimal_threshold).astype(int)
+
+        print(f"  OOF done in {time.time() - t0:.1f}s")
+        print(f"  BCR @ threshold=0.50       : {bcr_default:.4f}")
+        print(f"  BCR @ threshold={optimal_threshold:.2f} (optimal): {optimal_bcr:.4f}")
+        return optimal_bcr, oof_preds, optimal_threshold
+
+    except (AttributeError, ValueError):
+        # Pipeline does not support predict_proba — fall back to predict.
+        print("  [WARNING] predict_proba not available; using default threshold 0.5.")
+        oof_preds = cross_val_predict(
+            pipeline, X_train, y_train,
+            cv=cv, method="predict",
+            verbose=1,
+        )
+        bcr_hat = balanced_accuracy_score(y_train, oof_preds)
+        print(f"  OOF done in {time.time() - t0:.1f}s  |  BCRhat = {bcr_hat:.4f}")
+        return bcr_hat, oof_preds, 0.5
 
 
 def compute_per_fold_bcr(pipeline, X_train, y_train):
@@ -128,7 +176,7 @@ def run_evaluation(pipeline, X_train, y_train):
     fold_bcr_scores : np.ndarray of per-fold BCR scores
     """
 
-    bcr_hat, oof_preds = compute_oof_bcr(pipeline, X_train, y_train)
+    bcr_hat, oof_preds, optimal_threshold = compute_oof_bcr(pipeline, X_train, y_train)
     fold_bcr_scores, sigma = compute_per_fold_bcr(pipeline, X_train, y_train)
 
     fold_mean = fold_bcr_scores.mean()
@@ -167,7 +215,9 @@ def run_evaluation(pipeline, X_train, y_train):
     except Exception as exc:
         print(f"  [plot] WARNING: Could not generate evaluation plots: {exc}")
 
+    print(f"\n  Optimal decision threshold  : {optimal_threshold:.2f}")
+
     # Fit the final model on all training data.
     fitted_pipeline = train_final_model(deepcopy(pipeline), X_train, y_train)
 
-    return fitted_pipeline, bcr_hat, sigma, fold_bcr_scores
+    return fitted_pipeline, bcr_hat, sigma, fold_bcr_scores, optimal_threshold
