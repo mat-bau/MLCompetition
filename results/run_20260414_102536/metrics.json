@@ -1,0 +1,31 @@
+{
+  "BCRhat_to_submit": 0.75703,
+  "bcr_hat_oof": 0.763889,
+  "BER_diagnostic": 0.236111,
+  "sigma_used": 0.013719,
+  "sigma_theoretical": 0.013719,
+  "ci_95_low": 0.737,
+  "ci_95_high": 0.790777,
+  "p_score_perfect": 0.763889,
+  "p_score_ours": 0.76119,
+  "p_score_ci_low": 0.740788,
+  "p_score_ci_high": 0.740788,
+  "model": "Stacking Ensemble",
+  "feature_selection": "No feature selection (ensemble model)",
+  "optimal_threshold": 0.44,
+  "robustness_score": 0.009737,
+  "robustness_mean": 0.752994,
+  "per_fold_bcr": [
+    0.794444,
+    0.781481,
+    0.805556,
+    0.718519,
+    0.690741,
+    0.781481,
+    0.753704,
+    0.755556,
+    0.724074,
+    0.805556
+  ],
+  "n_eval_folds": 10
+}

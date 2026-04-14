@@ -1,0 +1,25 @@
+{
+  "model": "SVM RBF (tuned)",
+  "feature_selection": "No feature selection (all features used)",
+  "bcr_hat": 0.784815,
+  "predicted_bcr": 0.778005,
+  "BER_guess": 0.221995,
+  "sigma_empirical": 0.01362,
+  "sigma_theoretical": 0.01362,
+  "optimal_threshold": 0.14,
+  "robustness_score": 0.003101,
+  "robustness_mean": 0.755926,
+  "per_fold_bcr": [
+    0.796296,
+    0.785185,
+    0.796296,
+    0.733333,
+    0.725926,
+    0.807407,
+    0.757407,
+    0.787037,
+    0.755556,
+    0.811111
+  ],
+  "n_eval_folds": 10
+}

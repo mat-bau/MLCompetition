@@ -120,6 +120,92 @@ def estimate_predicted_bcr(bcr_hat, sigma, alpha=None):
     return float(bcr_hat - alpha_used * sigma), float(alpha_used)
 
 
+def compute_p_score(bcr_real, bcr_submitted, sigma):
+    """Competition performance metric P (WCCI 2006 / LINFO2262 A5).
+
+    P = BCR - Δ(BCR) · [1 - exp(-Δ(BCR) / σ)]
+
+    Parameters
+    ----------
+    bcr_real      : float — true test BCR (or our best proxy for it)
+    bcr_submitted : float — the BCRhat value we submit on Inginious
+    sigma         : float — theoretical error bar on BCR
+
+    Returns
+    -------
+    P : float  (maximised when bcr_submitted = bcr_real, i.e. Δ=0 → P=BCR)
+    """
+    delta = abs(bcr_real - bcr_submitted)
+    denom = max(sigma, 1e-10)
+    return float(bcr_real - delta * (1.0 - np.exp(-delta / denom)))
+
+
+def analyse_p_score_range(bcr_hat, predicted_bcr, sigma_used, sigma_theoretical):
+    """Show how many competition points you gain or lose depending on what
+    BCRhat you submit.
+
+    Uses bcr_hat (OOF estimate) as the best available proxy for the unknown
+    true test BCR.  Computes P for four scenarios:
+
+    ┌─────────────────────────────┬─────────────────────────────────┐
+    │ Scenario                    │ BCRhat submitted                │
+    ├─────────────────────────────┼─────────────────────────────────┤
+    │ Perfect prediction          │ bcr_hat  (Δ=0)                  │
+    │ Our calibrated estimate     │ predicted_bcr  (shrinkage)      │
+    │ CI lower bound (pessimistic)│ bcr_hat - 1.96·σ                │
+    │ CI upper bound (optimistic) │ bcr_hat + 1.96·σ                │
+    └─────────────────────────────┴─────────────────────────────────┘
+
+    The σ used for the P formula is sigma_theoretical (WCCI 2006), which
+    matches the competition definition.
+
+    Returns
+    -------
+    results : dict keyed by scenario name → {'submitted': float, 'P': float}
+    """
+    sigma_p = max(sigma_theoretical, 1e-10)   # σ in the P formula
+    ci_low  = bcr_hat - 1.96 * sigma_used
+    ci_high = bcr_hat + 1.96 * sigma_used
+
+    scenarios = {
+        "Perfect prediction (Δ=0)"    : bcr_hat,
+        "Our estimate (shrinkage)"     : predicted_bcr,
+        "CI lower bound (pessimistic)" : ci_low,
+        "CI upper bound (optimistic)"  : ci_high,
+    }
+
+    results = {}
+    print(f"\n  {'─'*62}")
+    print(f"  COMPETITION P-SCORE ANALYSIS  (BCR_real proxy = {bcr_hat:.4f})")
+    print(f"  σ (theoretical, used in P formula) = {sigma_p:.6f}")
+    print(f"  {'─'*62}")
+    print(f"  {'Scenario':<35} {'Submitted BCRhat':>16} {'P score':>9}")
+    print(f"  {'-'*62}")
+
+    for name, submitted in scenarios.items():
+        p = compute_p_score(bcr_hat, submitted, sigma_p)
+        results[name] = {"submitted": round(float(submitted), 6),
+                         "P": round(float(p), 6)}
+        marker = "  ← SUBMIT THIS" if name == "Our estimate (shrinkage)" else ""
+        print(f"  {name:<35} {submitted:>16.4f} {p:>9.4f}{marker}")
+
+    # Interpretation.
+    p_best  = results["Perfect prediction (Δ=0)"]["P"]
+    p_ours  = results["Our estimate (shrinkage)"]["P"]
+    p_low   = results["CI lower bound (pessimistic)"]["P"]
+    p_high  = results["CI upper bound (optimistic)"]["P"]
+    loss_ours = p_best - p_ours
+
+    print(f"  {'─'*62}")
+    print(f"  Max possible P (perfect prediction) : {p_best:.4f}")
+    print(f"  Our estimate loses                   : {loss_ours:.4f} pts vs perfect")
+    print(f"  Range if submitting CI extremes      : "
+          f"[{min(p_low, p_high):.4f}, {max(p_low, p_high):.4f}]")
+    print(f"  {'─'*62}")
+
+    return results
+
+
 def _analyse_folds(fold_scores):
     """Compute descriptive statistics and detect anomalous folds.
 
@@ -299,9 +385,20 @@ def run_evaluation(pipeline, X_train, y_train):
         est, _ = estimate_predicted_bcr(bcr_hat, sigma_used, alpha=alpha_test)
         marker = " ← adaptive choice" if abs(alpha_test - alpha_used) < 0.01 else ""
         print(f"    α={alpha_test:.1f} → predicted_BCR = {est:.4f}{marker}")
-    print(f"\n  predicted_BCR (to submit)        : {predicted_bcr:.4f}")
-    print(f"  BER_guess    (to submit)         : {1 - predicted_bcr:.4f}")
-    print(f"  Optimal threshold                : {optimal_threshold:.2f}")
+    # -----------------------------------------------------------------
+    # BCR vs BER clarification
+    # -----------------------------------------------------------------
+    # What to submit on Inginious:
+    #   Question 2 → BCRhat = predicted_bcr  (balanced classification rate)
+    # BER (balanced error rate = 1 - BCR) is kept as a diagnostic metric
+    # only; do NOT submit it.
+    # -----------------------------------------------------------------
+    print(f"\n  ╔══════════════════════════════════════════════════════╗")
+    print(f"  ║  SUBMIT ON INGINIOUS (Question 2)                   ║")
+    print(f"  ║  BCRhat = {predicted_bcr:.4f}                               ║")
+    print(f"  ╚══════════════════════════════════════════════════════╝")
+    print(f"  Optimal threshold (for predictions)  : {optimal_threshold:.2f}")
+    print(f"  BER (diagnostic only, do NOT submit) : {1 - predicted_bcr:.4f}")
     print(f"  {'─'*55}")
 
     # Classification report.
@@ -319,17 +416,23 @@ def run_evaluation(pipeline, X_train, y_train):
     if sigma_used > 0.025:
         print("  WARNING: σ > 0.025 — estimate is noisy; trust predicted_BCR over bcr_hat.")
 
+    # P-score analysis.
+    p_analysis = analyse_p_score_range(bcr_hat, predicted_bcr,
+                                        sigma_used, sigma_theoretical)
+
     # Plots.
     try:
-        from plots import plot_confusion_matrix, plot_fold_bcr_scores
+        from plots import (plot_confusion_matrix, plot_fold_bcr_scores,
+                           plot_p_score_analysis)
         plot_confusion_matrix(y_train, oof_preds,
                               title="Confusion Matrix (OOF predictions)",
                               filename="eval_01_confusion_matrix.png")
         plot_fold_bcr_scores(fold_bcr_scores, bcr_hat)
+        plot_p_score_analysis(bcr_hat, predicted_bcr, sigma_used)
     except Exception as exc:
         print(f"  [plot] WARNING: Could not generate evaluation plots: {exc}")
 
     fitted_pipeline = train_final_model(deepcopy(pipeline), X_train, y_train)
 
     return (fitted_pipeline, bcr_hat, sigma_used, fold_bcr_scores,
-            optimal_threshold, predicted_bcr, sigma_theoretical)
+            optimal_threshold, predicted_bcr, sigma_theoretical, p_analysis)

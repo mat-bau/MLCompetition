@@ -549,3 +549,92 @@ def plot_cv_scatter(search, model_name, param_x, param_y, filename):
     ax.set_title(f"{model_name} — RandomizedSearch: {x_label} vs {y_label}")
     plt.tight_layout()
     _savefig(fig, filename)
+
+
+def plot_rf_evolution(steps, bcr_means, filename="model_06_rf_evolution.png"):
+    """Line chart of BCR vs n_estimators to show how the RF improves as
+    more trees are added.
+
+    Parameters
+    ----------
+    steps     : list of int  — n_estimators values evaluated
+    bcr_means : list of float — CV BCR at each step
+    filename  : output filename
+    """
+    fig, ax = plt.subplots(figsize=(8, 4))
+    ax.plot(steps, bcr_means, "o-", color="#2ecc71", linewidth=2, markersize=7)
+    for x, y in zip(steps, bcr_means):
+        ax.text(x, y + 0.001, f"{y:.4f}", ha="center", va="bottom", fontsize=8)
+
+    ax.set_title("Random Forest — BCR vs Number of Trees")
+    ax.set_xlabel("n_estimators")
+    ax.set_ylabel("CV Balanced Accuracy (BCR)")
+    ax.set_xticks(steps)
+    ax.set_xticklabels(steps, rotation=30)
+    delta = max(bcr_means) - min(bcr_means)
+    ax.set_ylim(min(bcr_means) - max(delta * 0.5, 0.01),
+                max(bcr_means) + max(delta * 0.5, 0.01))
+    plt.tight_layout()
+    _savefig(fig, filename)
+
+
+def plot_p_score_analysis(bcr_hat, predicted_bcr, sigma,
+                          filename="eval_04_p_score_analysis.png"):
+    """Continuous P-score curve as a function of the submitted BCRhat.
+
+    Shows how many competition points are gained/lost depending on what
+    BCRhat value is submitted, with vertical lines marking key scenarios.
+
+    P = BCR - |BCR - BCRhat| * (1 - exp(-|BCR - BCRhat| / σ))
+
+    Parameters
+    ----------
+    bcr_hat       : float — our OOF BCR (proxy for true test BCR)
+    predicted_bcr : float — shrinkage-corrected value we'd submit
+    sigma         : float — uncertainty used for CI bounds
+    filename      : output filename
+    """
+    submitted_range = np.linspace(
+        max(0.0, bcr_hat - 4 * sigma),
+        min(1.0, bcr_hat + 4 * sigma),
+        300
+    )
+    sigma_p = max(sigma, 1e-10)
+    delta   = np.abs(bcr_hat - submitted_range)
+    p_curve = bcr_hat - delta * (1.0 - np.exp(-delta / sigma_p))
+
+    ci_low  = bcr_hat - 1.96 * sigma
+    ci_high = bcr_hat + 1.96 * sigma
+
+    def p_at(val):
+        d = abs(bcr_hat - val)
+        return bcr_hat - d * (1.0 - np.exp(-d / sigma_p))
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    ax.plot(submitted_range, p_curve, color="#3498db", linewidth=2, label="P(BCRhat)")
+    ax.fill_between(submitted_range, p_curve, min(p_curve), alpha=0.08, color="#3498db")
+
+    # Mark key scenarios.
+    for val, label, color, ls in [
+        (bcr_hat,       f"BCR_real proxy\n({bcr_hat:.4f})",        "#2ecc71", "--"),
+        (predicted_bcr, f"Our estimate\n({predicted_bcr:.4f}) ← SUBMIT", "#e74c3c", "-"),
+        (ci_low,        f"CI low\n({ci_low:.4f})",                  "#e67e22", ":"),
+        (ci_high,       f"CI high\n({ci_high:.4f})",                "#9b59b6", ":"),
+    ]:
+        if 0 <= val <= 1:
+            ax.axvline(val, color=color, linestyle=ls, linewidth=1.3, alpha=0.85)
+            ax.scatter([val], [p_at(val)], color=color, s=60, zorder=5)
+            ax.annotate(f"P={p_at(val):.4f}\n{label}", xy=(val, p_at(val)),
+                        xytext=(val + 0.002 * (1 if val < bcr_hat else -1),
+                                p_at(val) - 0.008),
+                        fontsize=7.5, color=color,
+                        ha="left" if val < bcr_hat else "right")
+
+    ax.set_title("Competition P Score vs Submitted BCRhat\n"
+                 f"(assumes true test BCR ≈ {bcr_hat:.4f})")
+    ax.set_xlabel("Submitted BCRhat (what you write in Q2 on Inginious)")
+    ax.set_ylabel("P score")
+    ax.legend(loc="lower left", fontsize=8)
+    plt.tight_layout()
+    _savefig(fig, filename)
+
