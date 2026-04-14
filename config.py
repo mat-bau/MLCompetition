@@ -67,14 +67,25 @@ DIST_SHIFT_THRESHOLD = 0.5
 # RandomizedSearchCV iterations per model
 # More iterations = better search coverage (Mac Studio handles it)
 # -------------------------------------------------------------------
-XGB_N_ITER = 80
-SVM_N_ITER = 50
-MLP_N_ITER = 40
+XGB_N_ITER = 200
+SVM_N_ITER = 150
+MLP_N_ITER = 150
+RF_N_ITER  = 30    # tuned Random Forest (RF struggles with 1024 dims; 30 iter is enough)
+GB_N_ITER  = 150   # HistGradientBoostingClassifier
+GNB_N_ITER = 30    # GaussianNB has only var_smoothing; few iterations needed
+LDA_N_ITER = 50    # LinearDiscriminantAnalysis (shrinkage + tol grid)
+QDA_N_ITER = 50    # QuadraticDiscriminantAnalysis (reg_param grid)
 
 # -------------------------------------------------------------------
 # Random seed used everywhere for reproducibility
 # -------------------------------------------------------------------
 RANDOM_STATE = 42
+
+# -------------------------------------------------------------------
+# Random Forest evolution tracking: n_estimators values to train at
+# sequentially, to see BCR grow as more trees are added.
+# -------------------------------------------------------------------
+RF_EVOLUTION_STEPS = [10, 25, 50, 100, 200, 300, 500]
 
 # -------------------------------------------------------------------
 # Feature selection k values to try with SelectKBest
@@ -103,7 +114,7 @@ SHRINKAGE_ALPHA = 0.5
 # -------------------------------------------------------------------
 # Seeds used for multi-seed robustness evaluation (Phase 6)
 # -------------------------------------------------------------------
-ROBUSTNESS_SEEDS = [42, 0, 7, 123, 2026]
+ROBUSTNESS_SEEDS = [42, 0, 7, 22, 123, 2026]
 
 # -------------------------------------------------------------------
 # Root directory for per-run output (timestamped subfolders)
