@@ -185,6 +185,8 @@ def run_baseline(preprocessor, X_train, y_train, is_imbalanced):
     """
     cv = get_cv()
 
+    # Baselines use plain sklearn Pipeline (no SMOTE) — class_weight compensates
+    # for the imbalance directly on the raw imbalanced training data.
     lr_pipeline = Pipeline([
         ("preprocessor", deepcopy(preprocessor)),
         ("model", LogisticRegression(
@@ -279,13 +281,16 @@ def tune_xgboost(preprocessor, X_train, y_train):
         random_state=RANDOM_STATE,
     ))
 
+    # When SMOTE is active the dataset is balanced → scale_pos_weight must be 1
+    # (no additional correction needed). Without SMOTE, search over class ratios.
+    spw_values = [1] if IMBLEARN_AVAILABLE else [1, 3, 5, 7, 9, 12]
     xgb_param_dist = {
         "model__n_estimators"     : [100, 200, 400, 600, 800, 1000, 1500],
         "model__max_depth"        : [3, 4, 5, 6, 7, 8],
         "model__learning_rate"    : [0.001, 0.003, 0.005, 0.01, 0.03, 0.05, 0.1, 0.2],
         "model__subsample"        : [0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
         "model__colsample_bytree" : [0.3, 0.4, 0.5, 0.6, 0.7, 0.9, 1.0],
-        "model__scale_pos_weight" : [1, 3, 5, 7, 9, 12],   # class imbalance ratio ≈ 9
+        "model__scale_pos_weight" : spw_values,
         "model__reg_alpha"        : [0, 0.001, 0.01, 0.1, 0.5, 1.0],
         "model__reg_lambda"       : [0.1, 0.5, 1, 2, 5, 10],
         "model__min_child_weight" : [1, 3, 5, 10],
@@ -338,15 +343,19 @@ def tune_svm(preprocessor, X_train, y_train, with_probability=True):
 
     svm_pipeline = _make_pipeline(preprocessor, SVC(
         kernel="rbf",
-        class_weight="balanced",
         probability=with_probability,
         random_state=RANDOM_STATE,
-        cache_size=2000,   # large cache = faster on high-d data (Mac Studio has plenty of RAM)
+        cache_size=2000,
     ))
 
+    # Let the search decide whether class_weight helps on top of SMOTE.
+    # With SMOTE: None is theoretically correct; "balanced" may still help
+    # depending on the SMOTE ratio vs the true imbalance.
+    cw_options = [None, "balanced"] if IMBLEARN_AVAILABLE else ["balanced"]
     svm_param_dist = {
-        "model__C"     : np.logspace(-3, 4, 50),   # 0.001 → 10 000
-        "model__gamma" : np.logspace(-5, 1, 50),   # 1e-5  →  10
+        "model__C"            : np.logspace(-3, 4, 50),
+        "model__gamma"        : np.logspace(-5, 1, 50),
+        "model__class_weight" : cw_options,
     }
 
     search = RandomizedSearchCV(
@@ -516,13 +525,15 @@ def tune_random_forest(preprocessor, X_train, y_train):
         random_state=RANDOM_STATE, n_jobs=N_JOBS,
     ))
 
+    cw_values = [None, "balanced", "balanced_subsample"] if IMBLEARN_AVAILABLE \
+                else ["balanced", "balanced_subsample"]
     rf_param_dist = {
         "model__n_estimators"    : [100, 200, 300, 400, 600, 800, 1000],
         "model__max_depth"       : [None, 10, 20, 30, 50],
         "model__min_samples_split": [2, 5, 10, 20],
         "model__min_samples_leaf": [1, 2, 4, 8],
         "model__max_features"    : ["sqrt", "log2", 0.2, 0.3, 0.5],
-        "model__class_weight"    : ["balanced", "balanced_subsample"],
+        "model__class_weight"    : cw_values,
         "model__bootstrap"       : [True, False],
     }
 
@@ -572,9 +583,10 @@ def tune_hist_gradient_boosting(preprocessor, X_train, y_train):
     t0 = time.time()
 
     gb_pipeline = _make_pipeline(preprocessor, HistGradientBoostingClassifier(
-        class_weight="balanced",
         random_state=RANDOM_STATE,
     ))
+
+    cw_gb = [None, "balanced"] if IMBLEARN_AVAILABLE else ["balanced"]
 
     gb_param_dist = {
         "model__max_iter"           : [100, 200, 300, 500, 800],
@@ -584,6 +596,7 @@ def tune_hist_gradient_boosting(preprocessor, X_train, y_train):
         "model__l2_regularization"  : [0.0, 0.01, 0.1, 0.5, 1.0, 5.0],
         "model__max_leaf_nodes"     : [15, 31, 63, 127, 255],
         "model__max_features"       : [0.5, 0.7, 0.9, 1.0],
+        "model__class_weight"       : cw_gb,
         "model__early_stopping"     : [True, False],
     }
 
@@ -727,28 +740,32 @@ def tune_lda(preprocessor, X_train, y_train):
 def tune_qda(preprocessor, X_train, y_train):
     """Tune QuadraticDiscriminantAnalysis via reg_param.
 
-    QDA models separate covariance matrices per class (unlike LDA which
-    assumes shared covariance). With 1024 features and only ~300 positive
-    samples, the positive-class covariance matrix is rank-deficient;
-    reg_param regularises it: reg_param=0 is pure QDA, reg_param=1 gives
-    a diagonal (GaussianNB-like) covariance. Tuning reg_param finds the
-    optimal blend.
+    QDA models separate covariance matrices per class. With 1024 features
+    but only ~240 minority samples per CV training fold, the class covariance
+    matrix is rank-deficient (n_features > n_samples_class). Fix: prepend
+    PCA(100) to reduce to 100 components — well below 240 samples, making
+    all covariance matrices full-rank.
+
+    reg_param blends QDA (0) toward diagonal/GaussianNB (1). We exclude
+    pure reg_param=0 (still potentially singular after PCA edge cases).
 
     Returns
     -------
     search : fitted RandomizedSearchCV object
     """
-    print(f"\n  Tuning QDA  ({QDA_N_ITER} iterations × {CV_N_SPLITS} folds "
+    print(f"\n  Tuning QDA+PCA  ({QDA_N_ITER} iterations × {CV_N_SPLITS} folds "
           f"= {QDA_N_ITER * CV_N_SPLITS} fits)...")
     t0 = time.time()
 
-    qda_pipeline = Pipeline([
-        ("preprocessor", deepcopy(preprocessor)),
-        ("model", QuadraticDiscriminantAnalysis()),
-    ])
+    # PCA(100) makes the class covariance matrices full-rank (100 < ~240 minority samples).
+    qda_pipeline = _make_pipeline(
+        preprocessor,
+        QuadraticDiscriminantAnalysis(),
+        pca_n_components=100,
+    )
 
     qda_param_dist = {
-        "model__reg_param" : list(np.linspace(0.0, 1.0, 100)),
+        "model__reg_param" : list(np.linspace(0.05, 1.0, 100)),  # avoid 0 (singular risk)
         "model__tol"       : [1e-5, 1e-4, 1e-3],
     }
 

@@ -1,0 +1,66 @@
+{
+  "CV_N_SPLITS": 5,
+  "CV_RANDOM_STATE": 42,
+  "DIST_SHIFT_THRESHOLD": 0.5,
+  "EVAL_N_SPLITS": 10,
+  "EVAL_RANDOM_STATE": 99,
+  "GB_N_ITER": 150,
+  "GNB_N_ITER": 30,
+  "HIGH_CORR_THRESHOLD": 0.98,
+  "IMBALANCE_THRESHOLD": 0.3,
+  "LABEL_MAP": {
+    "positive": 1,
+    "negative": 0
+  },
+  "LDA_N_ITER": 50,
+  "MLP_N_ITER": 150,
+  "NEAR_CONSTANT_VARIANCE": 0.01,
+  "N_JOBS": -1,
+  "OUTLIER_STD_THRESHOLD": 5.0,
+  "PCA_N_VALUES": [
+    50,
+    100,
+    200,
+    300
+  ],
+  "PLOTS_DIR": "./results/run_20260509_162156/plots",
+  "PREDICTIONS_PATH": "./predictions.csv",
+  "QDA_N_ITER": 50,
+  "RANDOM_STATE": 42,
+  "RESULTS_DIR": "./results",
+  "REVERSE_LABEL_MAP": {
+    "1": "positive",
+    "0": "negative"
+  },
+  "RF_EVOLUTION_STEPS": [
+    10,
+    25,
+    50,
+    100,
+    200,
+    300,
+    500
+  ],
+  "RF_N_ITER": 30,
+  "ROBUSTNESS_SEEDS": [
+    42,
+    0,
+    7,
+    22,
+    123,
+    2026
+  ],
+  "SELECT_K_VALUES": [
+    100,
+    200,
+    300,
+    500,
+    "all"
+  ],
+  "SHRINKAGE_ALPHA": 0.5,
+  "SVM_N_ITER": 150,
+  "TEST_FEATURES_PATH": "./A5_2026_test.csv",
+  "TRAIN_FEATURES_PATH": "./A5_2026_train.csv",
+  "TRAIN_LABELS_PATH": "./A5_2026_train_labels.csv",
+  "XGB_N_ITER": 200
+}

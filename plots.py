@@ -355,53 +355,94 @@ def plot_xgb_feature_importance(xgb_search, top_n=30):
     _savefig(fig, "model_02_xgb_feature_importance.png")
 
 
-def plot_feature_selection_results(fclassif_results, mi_results, pca_results, baseline_bcr):
-    """Line charts comparing feature selection strategies.
+def plot_feature_selection_results(fc_results, mi_results, mw_results,
+                                    pca_results, rfe_results,
+                                    l1lr_results, l1svc_results,
+                                    baseline_bcr):
+    """Three-panel comparison of all seven feature selection strategies.
 
-    Parameters
-    ----------
-    fclassif_results : list of dicts with 'k', 'mean', 'std'
-    mi_results       : list of dicts with 'k', 'mean', 'std'
-    pca_results      : list of dicts with 'n', 'mean', 'std'
-    baseline_bcr     : float, BCR with all features
+    Panel 1 — Filter methods (f_classif, mutual_info, Mann-Whitney) BCR vs k.
+    Panel 2 — Wrapper (RFE) and PCA BCR vs k.
+    Panel 3 — Embedded L1 (LR + SVC) BCR vs C (number of features annotated).
     """
-    fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+    _ensure_plots_dir()
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
 
-    # ---- SelectKBest ----
+    # ---- Panel 1: Filter methods ----
     ax = axes[0]
-    for results, label, color in [
-        (fclassif_results, "f_classif", "#3498db"),
-        (mi_results,       "mutual_info", "#e74c3c"),
-    ]:
-        ks    = [r["k"] if r["k"] != "all" else 1024 for r in results]
-        means = [r["mean"] for r in results]
-        stds  = [r["std"]  for r in results]
-        ax.errorbar(ks, means, yerr=stds, marker="o", label=label,
-                    color=color, linewidth=1.5, capsize=3)
-    ax.axhline(baseline_bcr, linestyle="--", color="gray",
-               linewidth=1.0, label=f"Baseline (all) = {baseline_bcr:.4f}")
-    ax.set_title("SelectKBest: k vs BCR")
-    ax.set_xlabel("k (number of features selected)")
-    ax.set_ylabel("CV Balanced Accuracy")
-    ax.legend(fontsize=9)
-    ax.set_xticks([r["k"] if r["k"] != "all" else 1024 for r in fclassif_results])
-    ax.set_xticklabels([str(r["k"]) for r in fclassif_results], rotation=30)
+    palette = {"f_classif": "#3498db", "mutual_info": "#e74c3c",
+               "Mann-Whitney": "#2ecc71"}
+    for res, color in [(fc_results, palette["f_classif"]),
+                       (mi_results, palette["mutual_info"]),
+                       (mw_results, palette["Mann-Whitney"])]:
+        if not res:
+            continue
+        lbl   = res[0]["label"]
+        ks    = [r["k"] if r["k"] != "all" else 1024 for r in res]
+        means = [r["mean"] for r in res]
+        stds  = [r["std"]  for r in res]
+        ax.errorbar(ks, means, yerr=stds, marker="o", label=lbl,
+                    color=color, linewidth=1.8, capsize=3)
+    ax.axhline(baseline_bcr, linestyle="--", color="gray", linewidth=1.0,
+               label=f"Baseline={baseline_bcr:.4f}")
+    ax.set_title("Filter Methods (SelectKBest)")
+    ax.set_xlabel("k features selected")
+    ax.set_ylabel("CV BCR (LR reference)")
+    ax.legend(fontsize=8)
+    if fc_results:
+        ticks = [r["k"] if r["k"] != "all" else 1024 for r in fc_results]
+        ax.set_xticks(ticks)
+        ax.set_xticklabels([str(r["k"]) for r in fc_results], rotation=30)
 
-    # ---- PCA ----
+    # ---- Panel 2: Wrapper (RFE) + PCA ----
     ax = axes[1]
-    ns    = [r["n"]    for r in pca_results]
-    means = [r["mean"] for r in pca_results]
-    stds  = [r["std"]  for r in pca_results]
-    ax.errorbar(ns, means, yerr=stds, marker="s", color="#9b59b6",
-                linewidth=1.5, capsize=3, label="PCA")
-    ax.axhline(baseline_bcr, linestyle="--", color="gray",
-               linewidth=1.0, label=f"Baseline (all) = {baseline_bcr:.4f}")
-    ax.set_title("PCA: n_components vs BCR")
-    ax.set_xlabel("n_components")
-    ax.set_ylabel("CV Balanced Accuracy")
-    ax.legend(fontsize=9)
+    if rfe_results:
+        ks    = [r["k"]    for r in rfe_results]
+        means = [r["mean"] for r in rfe_results]
+        stds  = [r["std"]  for r in rfe_results]
+        ax.errorbar(ks, means, yerr=stds, marker="^", color="#e67e22",
+                    linewidth=1.8, capsize=3, label="RFE (LR coef)")
+    if pca_results:
+        ks    = [r["k"]    for r in pca_results]
+        means = [r["mean"] for r in pca_results]
+        stds  = [r["std"]  for r in pca_results]
+        ax.errorbar(ks, means, yerr=stds, marker="s", color="#9b59b6",
+                    linewidth=1.8, capsize=3, label="PCA")
+    ax.axhline(baseline_bcr, linestyle="--", color="gray", linewidth=1.0,
+               label=f"Baseline={baseline_bcr:.4f}")
+    ax.set_title("Wrapper (RFE) & Dimensionality Reduction (PCA)")
+    ax.set_xlabel("k features / components")
+    ax.set_ylabel("CV BCR (LR reference)")
+    ax.legend(fontsize=8)
 
-    fig.suptitle("Feature Selection Strategy Comparison", fontweight="bold")
+    # ---- Panel 3: Embedded methods ----
+    ax = axes[2]
+    for res, color, marker in [(l1lr_results,  "#1abc9c", "o"),
+                                (l1svc_results, "#e74c3c", "s")]:
+        if not res:
+            continue
+        lbl   = res[0]["label"]
+        cs    = [r["C"]    for r in res]
+        means = [r["mean"] for r in res]
+        stds  = [r["std"]  for r in res]
+        n_feats = [r["k"]  for r in res]
+        ax.errorbar(range(len(cs)), means, yerr=stds, marker=marker,
+                    color=color, linewidth=1.8, capsize=3, label=lbl)
+        for i, (m, n) in enumerate(zip(means, n_feats)):
+            ax.annotate(f"n={n}", (i, m), textcoords="offset points",
+                        xytext=(0, 6), ha="center", fontsize=7, color=color)
+    ax.axhline(baseline_bcr, linestyle="--", color="gray", linewidth=1.0,
+               label=f"Baseline={baseline_bcr:.4f}")
+    ax.set_title("Embedded Methods (SelectFromModel L1)")
+    if l1lr_results:
+        ax.set_xticks(range(len(l1lr_results)))
+        ax.set_xticklabels([f"C={r['C']}" for r in l1lr_results], rotation=30)
+    ax.set_xlabel("L1 regularisation strength C")
+    ax.set_ylabel("CV BCR (LR reference)")
+    ax.legend(fontsize=8)
+
+    fig.suptitle("Feature Selection Strategy Comparison (all 7 methods)",
+                 fontweight="bold")
     plt.tight_layout()
     _savefig(fig, "feat_01_selection_comparison.png")
 

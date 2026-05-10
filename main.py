@@ -9,7 +9,9 @@
 import warnings
 import time
 import os
+import argparse
 import numpy as np
+import joblib
 
 # Suppress common non-critical sklearn convergence warnings during search.
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -50,6 +52,22 @@ from config import N_JOBS, PREDICTIONS_PATH, RESULTS_DIR, _n_physical
 # Helpers
 # ====================================================================
 
+def _load_or_tune(cache_path, tune_fn, *args, **kwargs):
+    """Load a fitted search object from disk if it exists, otherwise run tuning and save.
+
+    This lets you restart main.py mid-run (e.g. after a crash or to add a new
+    model) without re-fitting models that already completed.  Cache files are
+    stored inside the per-run directory so they are never shared across runs.
+    """
+    if os.path.exists(cache_path):
+        print(f"  [cache] Skipping — loading from {os.path.basename(cache_path)}")
+        return joblib.load(cache_path)
+    result = tune_fn(*args, **kwargs)
+    joblib.dump(result, cache_path)
+    print(f"  [cache] Saved → {os.path.basename(cache_path)}")
+    return result
+
+
 def _phase_header(n, title):
     """Print a consistent phase header with a timestamp."""
     ts = time.strftime("%H:%M:%S")
@@ -70,19 +88,41 @@ def _phase_footer(title, elapsed):
 # ====================================================================
 
 def main():
+    parser = argparse.ArgumentParser(description="A5 Toxicity Classification pipeline")
+    parser.add_argument(
+        "--resume", metavar="RUN_DIR", default=None,
+        help="Resume an existing run: reuse its cache/ folder (Phase 4 already done) "
+             "and re-run Phase 5 onward. Example: --resume ./results/run_20260509_162156",
+    )
+    args = parser.parse_args()
+
     pipeline_start = time.time()
 
     # ------------------------------------------------------------------
     # RUN SETUP — timestamped output directory + logging
     # ------------------------------------------------------------------
-    run_dir   = create_run_dir(RESULTS_DIR)
-    tee       = setup_logging(run_dir)
+    if args.resume:
+        run_dir  = os.path.abspath(args.resume)
+        if not os.path.isdir(run_dir):
+            raise FileNotFoundError(f"Resume directory not found: {run_dir}")
+        resuming = True
+        print(f"  [resume] Reusing run directory: {run_dir}")
+    else:
+        run_dir  = create_run_dir(RESULTS_DIR)
+        resuming = False
+
+    # In resume mode: append to existing log; otherwise create fresh.
+    tee       = setup_logging(run_dir, append=resuming)
     plots_dir = os.path.join(run_dir, "plots")
+    cache_dir = os.path.join(run_dir, "cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    os.makedirs(plots_dir, exist_ok=True)
 
     # Redirect all plot output to the per-run plots folder.
     _cfg.PLOTS_DIR = plots_dir
 
-    save_config(run_dir)
+    if not resuming:
+        save_config(run_dir)
 
     print("=" * 60)
     print("  A5 TOXICITY CLASSIFICATION -- FULL PIPELINE")
@@ -143,14 +183,18 @@ def main():
     _phase_header(4, "HYPERPARAMETER TUNING")
     t4 = time.time()
 
-    xgb_search = tune_xgboost(preprocessor, X_train, y_train)
-    svm_search = tune_svm(preprocessor, X_train, y_train, with_probability=True)
-    mlp_search = tune_mlp(preprocessor, X_train, y_train)
-    rf_search  = tune_random_forest(preprocessor, X_train, y_train)
-    gb_search  = tune_hist_gradient_boosting(preprocessor, X_train, y_train)
-    gnb_search = tune_gaussian_nb(preprocessor, X_train, y_train)
-    lda_search = tune_lda(preprocessor, X_train, y_train)
-    qda_search = tune_qda(preprocessor, X_train, y_train)
+    def _cache(name, fn, *a, **kw):
+        return _load_or_tune(os.path.join(cache_dir, f"{name}.pkl"), fn, *a, **kw)
+
+    xgb_search = _cache("xgb",  tune_xgboost,               preprocessor, X_train, y_train)
+    svm_search = _cache("svm",  tune_svm,                    preprocessor, X_train, y_train,
+                                                             with_probability=True)
+    mlp_search = _cache("mlp",  tune_mlp,                    preprocessor, X_train, y_train)
+    rf_search  = _cache("rf",   tune_random_forest,          preprocessor, X_train, y_train)
+    gb_search  = _cache("gb",   tune_hist_gradient_boosting, preprocessor, X_train, y_train)
+    gnb_search = _cache("gnb",  tune_gaussian_nb,            preprocessor, X_train, y_train)
+    lda_search = _cache("lda",  tune_lda,                    preprocessor, X_train, y_train)
+    qda_search = _cache("qda",  tune_qda,                    preprocessor, X_train, y_train)
 
     ensemble, ensemble_scores = build_stacking_ensemble(
         xgb_search, svm_search, mlp_search,
@@ -211,9 +255,16 @@ def main():
     _phase_header(5, "FEATURE SELECTION")
     t5 = time.time()
 
-    final_pipeline, selection_description = run_feature_selection(
-        preprocessor, best_pipeline, X_train, y_train, baseline_bcr=phase4_bcr
-    )
+    fs_cache = os.path.join(cache_dir, "feature_selection.pkl")
+    if os.path.exists(fs_cache):
+        print(f"  [cache] Skipping — loading from feature_selection.pkl")
+        final_pipeline, selection_description = joblib.load(fs_cache)
+    else:
+        final_pipeline, selection_description = run_feature_selection(
+            preprocessor, best_pipeline, X_train, y_train, baseline_bcr=phase4_bcr
+        )
+        joblib.dump((final_pipeline, selection_description), fs_cache)
+        print(f"  [cache] Saved → feature_selection.pkl")
     print(f"\n  Feature selection decision: {selection_description}")
 
     _phase_footer("FEATURE SELECTION", time.time() - t5)

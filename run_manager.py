@@ -55,10 +55,13 @@ class TeeLogger:
     sys.stdout.close()          # restores original stdout
     """
 
-    def __init__(self, run_dir: str):
+    def __init__(self, run_dir: str, append: bool = False):
         self._log_path = os.path.join(run_dir, "logs.txt")
-        self._file     = open(self._log_path, "w", buffering=1, encoding="utf-8")
+        mode           = "a" if append else "w"
+        self._file     = open(self._log_path, mode, buffering=1, encoding="utf-8")
         self._original = sys.stdout
+        if append:
+            self._file.write(f"\n{'='*60}\n  RESUMED at {time.strftime('%Y-%m-%d %H:%M:%S')}\n{'='*60}\n")
 
     def write(self, text: str) -> None:
         self._original.write(text)
@@ -80,12 +83,18 @@ class TeeLogger:
         return self._original.isatty()
 
 
-def setup_logging(run_dir: str) -> TeeLogger:
+def setup_logging(run_dir: str, append: bool = False) -> TeeLogger:
     """Replace sys.stdout with a TeeLogger that writes to run_dir/logs.txt.
+
+    Parameters
+    ----------
+    append : bool
+        If True, appends to an existing logs.txt (resume mode) instead of
+        overwriting it.  A separator line is written to mark the resume point.
 
     Returns the TeeLogger so the caller can call .close() at the end.
     """
-    tee = TeeLogger(run_dir)
+    tee = TeeLogger(run_dir, append=append)
     sys.stdout = tee
     return tee
 

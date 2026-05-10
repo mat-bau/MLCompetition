@@ -88,9 +88,11 @@ RANDOM_STATE = 42
 RF_EVOLUTION_STEPS = [10, 25, 50, 100, 200, 300, 500]
 
 # -------------------------------------------------------------------
-# Feature selection k values to try with SelectKBest
+# Feature selection k values to try with SelectKBest / RFE
 # -------------------------------------------------------------------
-SELECT_K_VALUES = [100, 200, 300, 500, "all"]
+SELECT_K_VALUES = [50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, "all"]   # filter methods
+RFE_K_VALUES    = [50, 100, 200, 300]               # wrapper (RFE step=100)
+EMBEDDED_C_VALUES = [0.001, 0.01, 0.1, 1.0]        # L1 regularisation strengths
 
 # -------------------------------------------------------------------
 # PCA n_components values to try

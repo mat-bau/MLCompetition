@@ -1,0 +1,31 @@
+{
+  "BCRhat_to_submit": 0.757429,
+  "bcr_hat_oof": 0.764444,
+  "BER_diagnostic": 0.235556,
+  "sigma_used": 0.014031,
+  "sigma_theoretical": 0.014031,
+  "ci_95_low": 0.736943,
+  "ci_95_high": 0.791946,
+  "p_score_perfect": 0.764444,
+  "p_score_ours": 0.761684,
+  "p_score_ci_low": 0.740817,
+  "p_score_ci_high": 0.740817,
+  "model": "QDA (tuned)",
+  "feature_selection": "No feature selection (all features)",
+  "optimal_threshold": 0.47,
+  "robustness_score": 0.007309,
+  "robustness_mean": 0.754753,
+  "per_fold_bcr": [
+    0.759259,
+    0.788889,
+    0.759259,
+    0.75,
+    0.674074,
+    0.82037,
+    0.759259,
+    0.775926,
+    0.801852,
+    0.755556
+  ],
+  "n_eval_folds": 10
+}

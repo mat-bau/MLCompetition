@@ -262,15 +262,26 @@ def compute_oof_bcr(pipeline, X_train, y_train):
             verbose=1,
         )[:, 1]
 
-        bcr_default                   = balanced_accuracy_score(
-            y_train, (oof_probas >= 0.5).astype(int)
-        )
+        preds_at_05                    = (oof_probas >= 0.5).astype(int)
         optimal_threshold, optimal_bcr = _scan_threshold(y_train, oof_probas)
-        oof_preds = (oof_probas >= optimal_threshold).astype(int)
+        oof_preds                      = (oof_probas >= optimal_threshold).astype(int)
+
+        # --- balanced_accuracy_score comparison table ---
+        bcr_05           = balanced_accuracy_score(y_train, preds_at_05)
+        bcr_05_adj       = balanced_accuracy_score(y_train, preds_at_05, adjusted=True)
+        bcr_opt          = balanced_accuracy_score(y_train, oof_preds)
+        bcr_opt_adj      = balanced_accuracy_score(y_train, oof_preds, adjusted=True)
 
         print(f"  OOF done in {time.time() - t0:.1f}s")
-        print(f"  BCR @ threshold=0.50          : {bcr_default:.4f}")
-        print(f"  BCR @ threshold={optimal_threshold:.2f} (optimal) : {optimal_bcr:.4f}")
+        print(f"\n  balanced_accuracy_score comparison (OOF):")
+        print(f"  {'Threshold':<12} {'adjusted':>8} {'BCR':>8}  note")
+        print(f"  {'-'*52}")
+        print(f"  {'0.50 (def)':12} {'False':>8} {bcr_05:>8.4f}  ← what sklearn CV reports as 'balanced_accuracy'")
+        print(f"  {'0.50 (def)':12} {'True':>8} {bcr_05_adj:>8.4f}  = (BCR-0.5)/0.5, chance-corrected")
+        print(f"  {f'{optimal_threshold:.2f} (opt)':12} {'False':>8} {bcr_opt:>8.4f}  ← what we optimise and submit")
+        print(f"  {f'{optimal_threshold:.2f} (opt)':12} {'True':>8} {bcr_opt_adj:>8.4f}  chance-corrected at optimal threshold")
+        print(f"  {'-'*52}")
+        print(f"  Gain from threshold tuning : {bcr_opt - bcr_05:+.4f}")
         return optimal_bcr, oof_preds, optimal_threshold
 
     except (AttributeError, ValueError):
@@ -284,12 +295,23 @@ def compute_oof_bcr(pipeline, X_train, y_train):
         return bcr_hat, oof_preds, 0.5
 
 
-def compute_per_fold_bcr(pipeline, X_train, y_train):
+def compute_per_fold_bcr(pipeline, X_train, y_train, optimal_threshold=0.5):
     """Compute per-fold BCR on independent evaluation folds (EVAL_*).
+
+    Uses predict_proba + optimal_threshold (same threshold found in compute_oof_bcr)
+    so that per-fold BCR is consistent with the OOF estimate.  Falls back to
+    predict() at 0.5 if the pipeline has no predict_proba.
+
+    Parameters
+    ----------
+    optimal_threshold : float, default 0.5
+        Decision threshold from compute_oof_bcr.  Each fold's BCR is computed at
+        both 0.5 (sklearn default) and this value — the difference is printed so
+        the threshold gain is visible per-fold.
 
     Returns
     -------
-    fold_bcr_scores : np.ndarray of shape (EVAL_N_SPLITS,)
+    fold_bcr_scores : np.ndarray of shape (EVAL_N_SPLITS,) — BCR at optimal_threshold
     sigma_empirical : float, standard error of the mean fold BCR
     fold_stats      : dict from _analyse_folds
     """
@@ -297,25 +319,54 @@ def compute_per_fold_bcr(pipeline, X_train, y_train):
         n_splits=EVAL_N_SPLITS, shuffle=True, random_state=EVAL_RANDOM_STATE
     )
 
-    fold_bcr_scores = []
-    print(f"  Computing per-fold BCR ({EVAL_N_SPLITS} folds, seed={EVAL_RANDOM_STATE}):")
+    fold_bcr_scores    = []
+    fold_bcr_at_05     = []
+    use_proba          = optimal_threshold != 0.5
+
+    print(f"  Computing per-fold BCR ({EVAL_N_SPLITS} folds, seed={EVAL_RANDOM_STATE}, "
+          f"threshold={optimal_threshold:.2f}):")
     t_total = time.time()
 
     for fold_idx, (train_idx, val_idx) in enumerate(cv.split(X_train, y_train), 1):
         t_fold = time.time()
         fold_pipeline = deepcopy(pipeline)
         fold_pipeline.fit(X_train[train_idx], y_train[train_idx])
-        fold_pred = fold_pipeline.predict(X_train[val_idx])
-        fold_bcr  = balanced_accuracy_score(y_train[val_idx], fold_pred)
-        fold_bcr_scores.append(fold_bcr)
+
+        y_val = y_train[val_idx]
+
+        if use_proba:
+            try:
+                fold_probas  = fold_pipeline.predict_proba(X_train[val_idx])[:, 1]
+                fold_pred_05  = (fold_probas >= 0.5).astype(int)
+                fold_pred_opt = (fold_probas >= optimal_threshold).astype(int)
+            except AttributeError:
+                fold_pred_opt = fold_pipeline.predict(X_train[val_idx])
+                fold_pred_05  = fold_pred_opt
+        else:
+            fold_pred_opt = fold_pipeline.predict(X_train[val_idx])
+            fold_pred_05  = fold_pred_opt
+
+        bcr_opt = balanced_accuracy_score(y_val, fold_pred_opt)
+        bcr_05  = balanced_accuracy_score(y_val, fold_pred_05)
+        fold_bcr_scores.append(bcr_opt)
+        fold_bcr_at_05.append(bcr_05)
         elapsed = time.time() - t_fold
-        print(f"    Fold {fold_idx:2d}/{EVAL_N_SPLITS}  BCR={fold_bcr:.4f}  ({elapsed:.1f}s)")
+
+        delta_str = f"  Δ={bcr_opt - bcr_05:+.4f}" if use_proba else ""
+        print(f"    Fold {fold_idx:2d}/{EVAL_N_SPLITS}  "
+              f"BCR@{optimal_threshold:.2f}={bcr_opt:.4f}  "
+              f"BCR@0.50={bcr_05:.4f}{delta_str}  ({elapsed:.1f}s)")
 
     fold_bcr_scores = np.array(fold_bcr_scores)
+    fold_bcr_at_05  = np.array(fold_bcr_at_05)
     sigma_empirical = fold_bcr_scores.std() / np.sqrt(len(fold_bcr_scores))
     fold_stats      = _analyse_folds(fold_bcr_scores)
 
     print(f"  Per-fold evaluation done in {time.time() - t_total:.1f}s")
+
+    if use_proba:
+        mean_gain = (fold_bcr_scores - fold_bcr_at_05).mean()
+        print(f"  Mean gain from threshold tuning (per fold): {mean_gain:+.4f}")
 
     # Fold ranking (best → worst).
     ranked = np.argsort(fold_bcr_scores)[::-1]
@@ -355,7 +406,7 @@ def run_evaluation(pipeline, X_train, y_train):
     """
     bcr_hat, oof_preds, optimal_threshold = compute_oof_bcr(pipeline, X_train, y_train)
     fold_bcr_scores, sigma_empirical, fold_stats = compute_per_fold_bcr(
-        pipeline, X_train, y_train
+        pipeline, X_train, y_train, optimal_threshold=optimal_threshold
     )
 
     # Theoretical σ (WCCI 2006 formula).
